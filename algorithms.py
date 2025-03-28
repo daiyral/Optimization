@@ -11,7 +11,6 @@ def rotate(w, u):
     Returns:
         U: rotation matrix in SO(2).
     """
-    assert w.shape == u.shape, "w and u must be same dimension"
     assert np.linalg.norm(w) > 0, "norm of w must not be zero"
     
     # step 1, normalize w and u
