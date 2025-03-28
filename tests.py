@@ -4,25 +4,27 @@ from algorithms import rotate, V_from_V
 
 class TestAlgorithms(unittest.TestCase):
 
-    def test_rotate_identity(self):
+    def test_identity_rotation(self):
         w = np.array([1.0, 0.0])
         u = np.array([1.0, 0.0])
         U = rotate(w, u)
         np.testing.assert_allclose(U, np.eye(2), atol=1e-6)
 
-    def test_rotate_90_deg(self):
+    def test_90_degree_ccw(self):
         w = np.array([1.0, 0.0])
         u = np.array([0.0, 1.0])
         U = rotate(w, u)
-        expected_U = np.array([[0, 1], [-1, 0]])
-        np.testing.assert_allclose(U, expected_U, atol=1e-6)
+        expected = np.array([[0, -1],
+                            [1,  0]])
+        np.testing.assert_allclose(U, expected, atol=1e-6)
 
-    def test_rotate_inverse(self):
+    def test_180_degree(self):
         w = np.array([1.0, 0.0])
         u = np.array([-1.0, 0.0])
         U = rotate(w, u)
-        expected_U = np.array([[-1, 0], [0, -1]])
-        np.testing.assert_allclose(U, expected_U, atol=1e-6)
+        expected = np.array([[-1,  0],
+                            [ 0, -1]])
+        np.testing.assert_allclose(U, expected, atol=1e-6)
 
     def compute_gR(self, p, q, R):
         p_norm = p / np.linalg.norm(p)

@@ -1,32 +1,29 @@
 import numpy as np
 
+
 def rotate(w, u):
     """
-    Calculates a rotation matrix that rotates u/||w|| to Uw/||w|| = u/||u||.
+    Calculates a rotation matrix that rotates w normalized to Uw/||w|| = u/||u||.
     Args:
-        w: np.ndarray, a 2D vector in R^2\{0}.
-        u: np.ndarray, a 2D vector in R^2\{0}.
+        w: vector in R^2\{0}.
+        u: vector in R^2\{0}.
 
     Returns:
-        U: np.ndarray, rotation matrix in SO(2).
+        U: rotation matrix in SO(2).
     """
-
-    if w.shape != (2,) or u.shape != (2,):
-        raise ValueError("w and u must be 2D vectors")
-    
-    if np.linalg.norm(w) == 0 or np.linalg.norm(u) == 0:
-        raise ValueError("w and u must be non-zero vectors")
+    assert w.shape == u.shape, "w and u must be same dimension"
+    assert np.linalg.norm(w) > 0, "norm of w must not be zero"
     
     # step 1, normalize w and u
     w = w / np.linalg.norm(w)
     u = u / np.linalg.norm(u)
 
     # step 2 j matrix
-    J = np.array([[0, -1],
-                  [1,  0]])
+    Ju = np.array([-u[1], u[0]]) # Ju = (-u2, u1)
+    Jw = np.array([-w[1], w[0]]) # Jw = (-w2, w1)
 
-    # step 3 [u, Ju] [w, Jw]^T
-    U = np.array([u, J @ u]) @ np.array([w, J @ w]).T
+    # step 3 [u Ju] [w Jw]^T
+    U = np.column_stack((u, Ju)) @ np.column_stack((w, Jw)).T
     return U
 
 def V_from_V(p, q, v):
