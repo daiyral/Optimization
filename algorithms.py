@@ -56,7 +56,12 @@ def V_from_V(p, q, v):
         U = np.zeros((2, 2))
     
     # step 7 calculate c
-    c = np.linalg.norm(v_prime - q_prime) / np.linalg.norm(p_prime - q_prime)
+    denom = np.linalg.norm(p_prime - q_prime)
+    if denom != 0:
+        c = np.linalg.norm(v_prime - q_prime) / denom 
+    else:
+        c = 0
+
     
     # step 8 calculate V(v)
     I = np.eye(2)
