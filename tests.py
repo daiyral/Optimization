@@ -2,6 +2,7 @@ import unittest
 import numpy as np
 from algorithms import rotate, V_from_V
 
+
 class TestAlgorithms(unittest.TestCase):
 
     def test_identity_rotation(self):
@@ -15,15 +16,15 @@ class TestAlgorithms(unittest.TestCase):
         u = np.array([0.0, 1.0])
         U = rotate(w, u)
         expected = np.array([[0, -1],
-                            [1,  0]])
+                             [1, 0]])
         np.testing.assert_allclose(U, expected, atol=1e-6)
 
     def test_180_degree(self):
         w = np.array([1.0, 0.0])
         u = np.array([-1.0, 0.0])
         U = rotate(w, u)
-        expected = np.array([[-1,  0],
-                            [ 0, -1]])
+        expected = np.array([[-1, 0],
+                             [0, -1]])
         np.testing.assert_allclose(U, expected, atol=1e-6)
 
     def compute_gR(self, p, q, R):
