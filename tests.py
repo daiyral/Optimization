@@ -3,6 +3,7 @@ import numpy as np
 from algorithms import rotate, V_from_V, PQBU, FG
 
 
+
 class TestAlgorithms(unittest.TestCase):
 
     def test_identity_rotation(self):
