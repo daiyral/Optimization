@@ -1,5 +1,8 @@
 import numpy as np
 
+# Danny Aibinder: 318239639
+# Bradley Feitsvaig: 311183073
+
 def is_nonzero(v):
     return np.linalg.norm(v) > 0
 
@@ -19,8 +22,8 @@ def rotate(w, u):
     """
     Calculates a rotation matrix that rotates w normalized to u normalized
     Args:
-        w: R^2\{0}
-        u: R^2\{0}
+        w: R^2\\{0}
+        u: R^2\\{0}
     Returns:
         U: rotation matrix in SO(2)
     """
@@ -43,8 +46,8 @@ def V_from_V(p, q, v):
     """
     Calculates a matrix that can move a point v after rotation, so it stays in the plane made by p and q
     Args:
-        p: R^d\{0}
-        q: R^d\sp{p}
+        p: R^d\\{0}
+        q: R^d\\sp{p}
         v: in sp{p,q}
     Returns:
         V(v): (d,2) matrix
@@ -89,8 +92,8 @@ def PQBU(p, q, z):
     describe all possible locations that z can move when moving triangle defined by p,q,z (locus of z) where p,q are fixed on the original line
     Args:
         z: R^3
-        p: R^3\{0}
-        q: R^3\sp{p}
+        p: R^3\\{0}
+        q: R^3\\sp{p}
     Returns:
         5 tuple (P, Q, B, U, u):
             P, Q, B, U: 3 x 2 matrix
@@ -135,9 +138,9 @@ def FG(p, q, z, l):
     """
     Calculate how z moves relative to l under all rots/trans of triangle (p, q, z)
     Args:
-        p: R^3\{0}
-        l: R^3\{0}
-        q: R^3\sp{p}
+        p: R^3\\{0}
+        l: R^3\\{0}
+        q: R^3\\sp{p}
         z: R^3
     Returns:
         3 tuple (F, G, c):
