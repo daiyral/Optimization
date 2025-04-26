@@ -1,4 +1,7 @@
 import numpy as np
+import cvxpy as cp
+
+# Version 2. with cvxpy optimization for reducing the problem of finding closest point of an ellipsoid to the origin to constrained linear regression
 
 # Danny Aibinder: 318239639
 # Bradley Feitsvaig: 311183073
@@ -187,3 +190,33 @@ def FG(p, q, z, l):
     G = H @ (L.T @ U)
 
     return F, G, c
+
+def reduce_to_constrained_linear_regression(F, G, y=np.array([1.0, 0.0])):
+    b = G @ y 
+    x = cp.Variable(2) # (x1, x2) as a variable to solve
+    objective = cp.Minimize(cp.sum_squares(F @ x - b)) # minimize ||Fx - b||^2
+    constraints = [cp.norm(x, 2) <= 1] # ||x|| <= 1
+    problem = cp.Problem(objective, constraints) 
+    problem.solve()
+
+    return x.value, problem.value 
+    
+if __name__ == "__main__":
+    # define elipsoid x^2/4 + y^2/9 + z^2/16 = 1
+    p = np.array([2.0, 0.0, 0.0])
+    q = np.array([0.0, 3.0, 0.0])
+    z = np.array([1.0, 1.0, 2.0])
+    l = -z
+    F, G, c = FG(p, q, z, l)
+    x_optimal, optimal_value = reduce_to_constrained_linear_regression(F, G)
+    print("Optimal x:", x_optimal)
+    print("Optimal value:", optimal_value)
+
+    # Why does solving this FG problem find the closest point on an ellipsoid to the origin?
+        #FG function linearizes movement on the ellipsoid surface around a point
+        #We solve a local optimization problem to find the best small step toward the origin.
+        #Minimizing ∥Fx−Gy∥ under a unit constraint gives the closest local movement towards the origin.
+
+    # Why does solving this FG problem solve a 2D PnP problem?
+        #The FG matrices gives us matrix to represent how rotations and translations move the triangle defined by (p, q, z).
+        #Solving ∥Fx−Gy∥ optimizes the motion to a direction, since it is linear in x and y, it is a 2D problem.
