@@ -205,7 +205,6 @@ def reduce_to_constrained_linear_regression(F, G, y=np.array([1.0, 0.0])):
 
 
 if __name__ == "__main__":
-    # define points for isosceles triangle
     p = np.array([1.0, 0.0, 0.0])
     q = np.array([0.0, 1.0, 0.0])
     z = np.array([0.5, 0.5, 1.0])
