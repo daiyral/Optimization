@@ -203,24 +203,63 @@ def reduce_to_constrained_linear_regression(F, G, y=np.array([1.0, 0.0])):
 
     return x.value, problem.value
 
+def check_answer(F, G, optimal_val, y=np.array([1.0, 0.0])):
+    #creats the ellipsoid points and checks if the optimal point is the closest to the origin
+    theta = np.linspace(0, 2 * np.pi, 300)
+    unit_circle = np.stack([np.cos(theta), np.sin(theta)], axis=1)
+    ellipse_points = np.array([F @ x - G @ y for x in unit_circle])
+
+    # Check if any other point is closer
+    all_dists = np.linalg.norm(ellipse_points, axis=1)
+    #min distance
+    min_dist = np.min(all_dists)
+    is_correct = optimal_val<=min_dist
+
+    return is_correct
+
+def visualize_answer(F, G, x_optimal, min_distance = 0,y=np.array([1.0, 0.0])):
+    theta = np.linspace(0, 2 * np.pi, 300)
+    unit_circle = np.stack([np.cos(theta), np.sin(theta)], axis=1)
+    ellipse_points = np.array([F @ x - G @ y for x in unit_circle]) # create the ellipse points by applying the transformation F and G to the unit circle
+    optimal_point = F @ x_optimal - G @ y # the solution x_optimal is the point on the ellipse closest to the origin
+    plt.figure(figsize=(6, 6))
+    plt.plot(ellipse_points[:, 0], ellipse_points[:, 1])
+    plt.scatter(0, 0, color='black', label="Origin")
+    plt.scatter(*optimal_point, color='red', label="Optimal Point")
+    plt.plot([0, optimal_point[0]], [0, optimal_point[1]], color='gray', linestyle='--')
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.title(f"Distance to origin: {min_distance} \n Optimal Point: {optimal_point}")
+    plt.axis('equal')
+    plt.grid(True)
+    plt.legend()
+    plt.show()
 
 if __name__ == "__main__":
-    p = np.array([1.0, 0.0, 0.0])
-    q = np.array([0.0, 1.0, 0.0])
-    z = np.array([0.5, 0.5, 1.0])
-    l = np.array([1.0, 1.0, 1.0])
-    F, G, _ = FG(p, q, z, l) # get FG
-    x_opt, val = reduce_to_constrained_linear_regression(F, G) # reduce to linear regression
-
-    print("Optimal x:", x_opt)
-    print("Objective value:", val)
+    pqzl = [
+        (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.5, 0.5, 1.0]), np.array([1.0, 1.0, 1.0])),
+        (np.array([2.0, 0.0, 0.0]), np.array([0.0, 3.0, 0.0]), np.array([1.0, 1.0, 2.0]), np.array([-1.0, -1.0, -2.0])),
+        (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.5, 1.0, 2]), np.array([-1.0, 1.0, 1.0])),
+    ]
+    for i, (p, q, z, l) in enumerate(pqzl):
+        F, G, _ = FG(p, q, z, l)
+        x_opt, val = reduce_to_constrained_linear_regression(F, G)
+        is_correct = check_answer(F, G, val)
+        if is_correct:
+            print("Answer is correct")
+            print("Optimal x:", x_opt)
+            print("Minimum squared distance:", val)
+        else:
+            print("Not optimal point")
+        
+        visualize_answer(F, G, x_opt, val)
     
 
-    # Why does solving this FG problem find the closest point on an ellipsoid to the origin?
+    # Why does solving this FG problem find the closest point on an ellipsoid  to the origin?
         # we represent the elipsoid as ||Fx - Gy|| where F rotates and scales the elipsoid and Gy shifts the elipsoid. This is similar to Ax - b.
         # we can define a circle as Fx, if F is a orthogonal matrix, otherwise it is a elipsoid
-        # the points on the ellipsoid are represented by Fx, the optimization finds the point Fx on a elipsoid shifted by Gy to the origin under the ||x|| <= 1 constraint to ensure points within the ellipsoid.
-        # so minimizing ||Fx - Gy|| finds the x point on an shifted ellipsoid closest to the origin with the objective of minimizing euclidean distance of a poitn to the origin. this is similar to the constrained linear regression.
+        # the points on the ellipsoid  are represented by Fx, the optimization finds the point Fx on a elipsoid shifted by Gy to the origin under the ||x|| <= 1 constraint to ensure points within the ellipsoid .
+        # so minimizing ||Fx - Gy|| finds the x point on an shifted ellipsoid  closest to the origin with the objective of minimizing euclidean distance of a point to the origin. this is similar to the constrained linear regression.
 
     # Why does solving this FG problem solve a 2D PnP problem?
         # FG captures motions of 3d point while preserving geometry of a triangle. 
