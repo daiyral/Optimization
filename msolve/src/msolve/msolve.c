@@ -2273,7 +2273,7 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
   double strat = 0;
 
   /* Prevent infinite loops by limiting iterations */
-  int max_iterations = 100000;
+  int max_iterations = 4096;
   int iteration_count = 0;
   int hit_iteration_limit = 0;
 
