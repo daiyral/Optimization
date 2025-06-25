@@ -23,6 +23,59 @@
 #include "../neogb/meta_data.h"
 #define REDUCTION_ALLINONE 1
 
+#ifdef _WIN32
+#include <windows.h>
+// Windows-specific allocation limits to prevent performance issues
+#define WIN_MAX_MATRIX_SIZE (64 * 1024 * 1024)  // 64MB limit
+#define WIN_MAX_DQUOT_DIMENSION 8192             // Max quotient dimension
+#define WIN_FORCE_MALLOC_THRESHOLD (4 * 1024 * 1024)  // 4MB: use malloc instead of posix_memalign
+
+// Fast Windows allocation without alignment overhead for large matrices
+static inline void* win_alloc_large_matrix(size_t size) {
+    if (size > WIN_FORCE_MALLOC_THRESHOLD) {
+        // For large allocations, use malloc (faster on Windows than posix_memalign)
+        return malloc(size);
+    } else {
+        // Use aligned allocation for smaller matrices
+        void *ptr;
+        if (posix_memalign(&ptr, 32, size) != 0) {
+            return NULL;
+        }
+        return ptr;
+    }
+}
+
+static inline void win_free_large_matrix(void *ptr) {
+    if (ptr) {
+        free(ptr);  // free() works for both malloc and posix_memalign on most systems
+    }
+}
+
+// Windows-compatible matrix free function
+#define WIN_MATRIX_FREE(ptr) win_free_large_matrix(ptr)
+#else
+#define WIN_MATRIX_FREE(ptr) posix_memalign_free(ptr)
+
+// Check if matrix allocation would be too large for Windows
+static inline int win_check_matrix_size(long dquot, long len_xn, const char* context) {
+    size_t matrix_size = (size_t)dquot * len_xn * sizeof(CF_t);
+    
+    if (dquot > WIN_MAX_DQUOT_DIMENSION) {
+        fprintf(stderr, "WARNING: Quotient dimension %ld exceeds Windows limit %d in %s\n", 
+                dquot, WIN_MAX_DQUOT_DIMENSION, context);
+        return 0;  // Don't fail, just warn
+    }
+    
+    if (matrix_size > WIN_MAX_MATRIX_SIZE) {
+        fprintf(stderr, "ERROR: Matrix allocation %.1f MB exceeds Windows limit %.1f MB in %s\n",
+                matrix_size / 1048576.0, WIN_MAX_MATRIX_SIZE / 1048576.0, context);
+        return -1;  // Fail allocation
+    }
+    
+    return 1;  // OK to proceed
+}
+#endif
+
 void print_fglm_header(
         FILE *f,
         const md_t * const st
@@ -1462,50 +1515,84 @@ static inline sp_matfglm_t * build_matrixn(int32_t *lmb, long dquot, int32_t bld
   long len1 = dquot * len_xn;
   long len2 = dquot - len_xn;
 
+#ifdef _WIN32
+  // Windows optimization: check matrix size and use fast allocation
+  int size_check = win_check_matrix_size(dquot, len_xn, "build_matrixn");
+  if (size_check < 0) {
+    fprintf(stderr, "Matrix too large for Windows, aborting allocation\n");
+    free(matrix);
+    return NULL;
+  }
+  matrix->dense_mat = (CF_t*)win_alloc_large_matrix(sizeof(CF_t)*len1);
+  if (!matrix->dense_mat) {
+    fprintf(stderr, "Problem when allocating matrix->dense_mat on Windows\n");
+    free(matrix);
+    return NULL;
+  }
+#else
   if(posix_memalign((void **)&(matrix->dense_mat), 32, sizeof(CF_t)*len1)){
     fprintf(stderr, "Problem when allocating matrix->dense_mat\n");
     exit(1);
   }
-  else{
-    for(long i = 0; i < len1; i++){
-      matrix->dense_mat[i] = 0;
-    }
+#endif
+  // Initialize the matrix to zero
+  for(long i = 0; i < len1; i++){
+    matrix->dense_mat[i] = 0;
   }
+#ifdef _WIN32
+  matrix->triv_idx = (CF_t*)win_alloc_large_matrix(sizeof(CF_t)*len2);
+  if (!matrix->triv_idx) {
+    fprintf(stderr, "Problem when allocating matrix->triv_idx on Windows\n");
+    win_free_large_matrix(matrix->dense_mat);
+    free(matrix);
+    return NULL;
+  }
+#else
   if(posix_memalign((void **)&matrix->triv_idx, 32, sizeof(CF_t)*len2)){
     fprintf(stderr, "Problem when allocating matrix->triv_idx\n");
     exit(1);
   }
-  else{
-    for(long i = 0; i < len2; i++){
-      matrix->triv_idx[i] = 0;
-    }
+#endif
+  for(long i = 0; i < len2; i++){
+    matrix->triv_idx[i] = 0;
   }
+#ifdef _WIN32
+  matrix->triv_pos = (CF_t*)win_alloc_large_matrix(sizeof(CF_t)*len2);
+  matrix->dense_idx = (CF_t*)win_alloc_large_matrix(sizeof(CF_t)*len_xn);
+  matrix->dst = (CF_t*)win_alloc_large_matrix(sizeof(CF_t)*len_xn);
+  
+  if (!matrix->triv_pos || !matrix->dense_idx || !matrix->dst) {
+    fprintf(stderr, "Problem when allocating matrix arrays on Windows\n");
+    win_free_large_matrix(matrix->dense_mat);
+    win_free_large_matrix(matrix->triv_idx);
+    win_free_large_matrix(matrix->triv_pos);
+    win_free_large_matrix(matrix->dense_idx);
+    win_free_large_matrix(matrix->dst);
+    free(matrix);
+    return NULL;
+  }
+#else
   if(posix_memalign((void **)&matrix->triv_pos, 32, sizeof(CF_t)*len2)){
     fprintf(stderr, "Problem when allocating matrix->triv_pos\n");
     exit(1);
-  }
-  else{
-    for(long i = 0; i <len2; i++){
-      matrix->triv_pos[i] = 0;
-    }
   }
   if(posix_memalign((void **)&matrix->dense_idx, 32, sizeof(CF_t)*len_xn)){
     fprintf(stderr, "Problem when allocating matrix->dense_idx\n");
     exit(1);
   }
-  else{
-    for(long i = 0; i < len_xn; i++){
-      matrix->dense_idx[i] = 0;
-    }
-  }
   if(posix_memalign((void **)&matrix->dst, 32, sizeof(CF_t)*len_xn)){
     fprintf(stderr, "Problem when allocating matrix->dense_idx\n");
     exit(1);
   }
-  else{
-    for(long i = 0; i < len_xn; i++){
-      matrix->dst[i] = 0;
-    }
+#endif
+
+  // Initialize all arrays to zero
+  for(long i = 0; i < len2; i++){
+    matrix->triv_pos[i] = 0;
+  }
+  for(long i = 0; i < len_xn; i++){
+    matrix->dense_idx[i] = 0;
+    matrix->dst[i] = 0;
   }
 
   long l_triv = 0;
@@ -1544,10 +1631,10 @@ static inline sp_matfglm_t * build_matrixn(int32_t *lmb, long dquot, int32_t bld
         count++;
         if(len_xn < count && i < dquot){
           fprintf(stderr, "One should not arrive here (build_matrix)\n");
-          posix_memalign_free(matrix->dense_mat);
-          posix_memalign_free(matrix->dense_idx);
-          posix_memalign_free(matrix->triv_idx);
-          posix_memalign_free(matrix->triv_pos);
+          WIN_MATRIX_FREE(matrix->dense_mat);
+          WIN_MATRIX_FREE(matrix->dense_idx);
+          WIN_MATRIX_FREE(matrix->triv_idx);
+          WIN_MATRIX_FREE(matrix->triv_pos);
           free(matrix);
 
           free(len_gb_xn);
@@ -1561,11 +1648,11 @@ static inline sp_matfglm_t * build_matrixn(int32_t *lmb, long dquot, int32_t bld
         fprintf(stderr, "Multiplication by ");
         display_monomial_full(stderr, nv, NULL, 0, exp);
         fprintf(stderr, " gets outside the staircase\n");
-        posix_memalign_free(matrix->dense_mat);
-        posix_memalign_free(matrix->dense_idx);
-        posix_memalign_free(matrix->triv_idx);
-        posix_memalign_free(matrix->triv_pos);
-        posix_memalign_free(matrix->dst);
+        WIN_MATRIX_FREE(matrix->dense_mat);
+        WIN_MATRIX_FREE(matrix->dense_idx);
+        WIN_MATRIX_FREE(matrix->triv_idx);
+        WIN_MATRIX_FREE(matrix->triv_pos);
+        WIN_MATRIX_FREE(matrix->dst);
         free(matrix);
         matrix  = NULL;
 
