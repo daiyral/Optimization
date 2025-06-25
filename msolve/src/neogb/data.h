@@ -22,6 +22,14 @@
 #ifndef GB_DATA_H
 #define GB_DATA_H
 
+/* Feature test macros for posix_memalign */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200112L
+#endif
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -113,11 +121,18 @@ static inline void* pool_alloc(mem_pool_t *pool, size_t size) {
     size = (size + pool->block_alignment - 1) & ~(pool->block_alignment - 1);
     
     void *ptr;
-    #ifdef __GNUC__
+    /* Try aligned allocation if available, otherwise use regular malloc */
+    #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
     if (posix_memalign(&ptr, pool->block_alignment, size) != 0) {
         ptr = malloc(size);
     }
+    #elif defined(_WIN32)
+    ptr = _aligned_malloc(size, pool->block_alignment);
+    if (!ptr) {
+        ptr = malloc(size);
+    }
     #else
+    /* Fallback to regular malloc for systems without aligned allocation */
     ptr = malloc(size);
     #endif
     
