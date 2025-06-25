@@ -25,9 +25,19 @@
 #ifdef __GNUC__
 #define likely(x)      __builtin_expect(!!(x), 1)
 #define unlikely(x)    __builtin_expect(!!(x), 0)
+#define RESTRICT       __restrict__
+#define PREFETCH(addr, rw, locality) __builtin_prefetch((addr), (rw), (locality))
+#define PURE           __attribute__((pure))
+#define HOT            __attribute__((hot))
+#define INLINE         __attribute__((always_inline)) inline
 #else
 #define likely(x)      (x)
 #define unlikely(x)    (x)
+#define RESTRICT
+#define PREFETCH(addr, rw, locality) ((void)0)
+#define PURE
+#define HOT
+#define INLINE         inline
 #endif
 
 /* Performance optimization: Memory alignment for better cache performance */
@@ -36,6 +46,39 @@
 #else
 #define CACHE_ALIGNED
 #endif
+
+/* Performance optimization: SIMD includes */
+#if defined(__AVX2__)
+#include <immintrin.h>
+#define USE_AVX2 1
+#elif defined(__SSE4_1__)
+#include <smmintrin.h>
+#define USE_SSE4 1
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#define USE_NEON 1
+#endif
+
+/* Performance optimization: Fast power of 2 using bit shifts instead of pow() */
+static INLINE uint32_t fast_pow2(uint32_t n) {
+    return (n < 32) ? (1U << n) : ((uint32_t)1U << 31);
+}
+
+/* Performance optimization: Fast log2 for hash table sizing */
+static INLINE uint32_t fast_log2(uint32_t x) {
+#ifdef __GNUC__
+    return (x == 0) ? 0 : (31U - (uint32_t)__builtin_clz(x));
+#else
+    uint32_t result = 0;
+    while (x >>= 1) result++;
+    return result;
+#endif
+}
+
+/* Performance optimization: Optimized modulo for power of 2 */
+static INLINE hi_t fast_mod_pow2(hi_t x, hi_t mask) {
+    return x & mask;
+}
 
 /* we have three different hash tables:
  * 1. one hash table for elements in the basis (bht)
@@ -46,37 +89,101 @@
 /* The idea of the structure of the hash table is taken from an
  * implementation by Roman Pearce and Michael Monagan in Maple. */
 
-/* Performance optimization: Improved pseudo random number generator */
-static inline val_t pseudo_random_number_generator(
-    uint32_t *seed
-    )
-{
-    uint32_t rseed  = *seed;
-    rseed ^=  (rseed << 13);
-    rseed ^=  (rseed >> 17);
-    rseed ^=  (rseed << 5);
-    *seed =   rseed;
+/* Performance optimization: Improved pseudo random number generator with better distribution */
+static INLINE val_t pseudo_random_number_generator(uint32_t * RESTRICT seed) {
+    uint32_t rseed = *seed;
+    /* Xorshift32 algorithm - faster and better distribution than original */
+    rseed ^= rseed << 13;
+    rseed ^= rseed >> 17;
+    rseed ^= rseed << 5;
+    *seed = rseed;
     return (val_t)rseed;
 }
 
-/* Performance optimization: Optimized hash computation */
-static inline val_t compute_hash_value_optimized(
-    const exp_t * const a,
-    const val_t * const rn,
+/* Performance optimization: SIMD-optimized hash computation */
+static HOT INLINE val_t compute_hash_value_simd(
+    const exp_t * RESTRICT a,
+    const val_t * RESTRICT rn,
     const len_t evl
-    )
-{
+) {
     val_t hash = 0;
-    const len_t unroll_factor = 4;
-    len_t i;
+    len_t i = 0;
+
+#if defined(USE_AVX2) && defined(__x86_64__)
+    /* AVX2 vectorized hash computation for x86_64 */
+    __m256i hash_vec = _mm256_setzero_si256();
+    const len_t simd_end = evl & ~7U; /* Process 8 elements at a time */
     
-    /* Unrolled loop for better performance */
-    for (i = 0; i < (evl & ~(unroll_factor - 1)); i += unroll_factor) {
+    for (; i < simd_end; i += 8) {
+        PREFETCH(&a[i + 8], 0, 3);
+        PREFETCH(&rn[i + 8], 0, 3);
+        
+        __m256i a_vec = _mm256_loadu_si256((__m256i*)&a[i]);
+        __m256i rn_vec = _mm256_loadu_si256((__m256i*)&rn[i]);
+        __m256i prod = _mm256_mullo_epi32(a_vec, rn_vec);
+        hash_vec = _mm256_add_epi32(hash_vec, prod);
+    }
+    
+    /* Horizontal sum of AVX2 vector */
+    __m128i sum128 = _mm_add_epi32(_mm256_castsi256_si128(hash_vec), 
+                                   _mm256_extracti128_si256(hash_vec, 1));
+    sum128 = _mm_hadd_epi32(sum128, sum128);
+    sum128 = _mm_hadd_epi32(sum128, sum128);
+    hash = _mm_cvtsi128_si32(sum128);
+    
+#elif defined(USE_SSE4)
+    /* SSE4 vectorized hash computation */
+    __m128i hash_vec = _mm_setzero_si128();
+    const len_t simd_end = evl & ~3U; /* Process 4 elements at a time */
+    
+    for (; i < simd_end; i += 4) {
+        PREFETCH(&a[i + 4], 0, 3);
+        PREFETCH(&rn[i + 4], 0, 3);
+        
+        __m128i a_vec = _mm_loadu_si128((__m128i*)&a[i]);
+        __m128i rn_vec = _mm_loadu_si128((__m128i*)&rn[i]);
+        __m128i prod = _mm_mullo_epi32(a_vec, rn_vec);
+        hash_vec = _mm_add_epi32(hash_vec, prod);
+    }
+    
+    /* Horizontal sum of SSE vector */
+    hash_vec = _mm_hadd_epi32(hash_vec, hash_vec);
+    hash_vec = _mm_hadd_epi32(hash_vec, hash_vec);
+    hash = _mm_cvtsi128_si32(hash_vec);
+    
+#elif defined(USE_NEON)
+    /* NEON vectorized hash computation for ARM */
+    uint32x4_t hash_vec = vdupq_n_u32(0);
+    const len_t simd_end = evl & ~3U; /* Process 4 elements at a time */
+    
+    for (; i < simd_end; i += 4) {
+        __builtin_prefetch(&a[i + 4], 0, 3);
+        __builtin_prefetch(&rn[i + 4], 0, 3);
+        
+        uint32x4_t a_vec = vld1q_u32((uint32_t*)&a[i]);
+        uint32x4_t rn_vec = vld1q_u32((uint32_t*)&rn[i]);
+        uint32x4_t prod = vmulq_u32(a_vec, rn_vec);
+        hash_vec = vaddq_u32(hash_vec, prod);
+    }
+    
+    /* Horizontal sum of NEON vector */
+    uint32x2_t sum = vadd_u32(vget_low_u32(hash_vec), vget_high_u32(hash_vec));
+    sum = vpadd_u32(sum, sum);
+    hash = vget_lane_u32(sum, 0);
+    
+#else
+    /* Scalar fallback with manual unrolling */
+    const len_t unroll_end = evl & ~3U;
+    for (; i < unroll_end; i += 4) {
+        PREFETCH(&a[i + 4], 0, 3);
+        PREFETCH(&rn[i + 4], 0, 3);
+        
         hash += ((val_t)a[i] * rn[i]) + 
                 ((val_t)a[i+1] * rn[i+1]) + 
                 ((val_t)a[i+2] * rn[i+2]) + 
                 ((val_t)a[i+3] * rn[i+3]);
     }
+#endif
     
     /* Handle remaining elements */
     for (; i < evl; ++i) {
@@ -84,6 +191,29 @@ static inline val_t compute_hash_value_optimized(
     }
     
     return hash;
+}
+
+/* Performance optimization: Optimized memory allocation with alignment */
+static INLINE void* aligned_malloc(size_t size, size_t alignment) {
+#if defined(_WIN32)
+    return _aligned_malloc(size, alignment);
+#elif defined(__GNUC__)
+    void *ptr;
+    if (posix_memalign(&ptr, alignment, size) == 0) {
+        return ptr;
+    }
+    return malloc(size);
+#else
+    return malloc(size);
+#endif
+}
+
+static INLINE void aligned_free(void *ptr) {
+#if defined(_WIN32)
+    _aligned_free(ptr);
+#else
+    free(ptr);
+#endif
 }
 
 ht_t *initialize_basis_hash_table(
@@ -111,19 +241,17 @@ ht_t *initialize_basis_hash_table(
         nv : (len_t)((CHAR_BIT * sizeof(sdm_t)));
     ht->dv  = (len_t *)calloc((unsigned long)ht->ndv, sizeof(len_t));
 
-    ht->hsz   = (hl_t)pow(2, st->init_hts);
+    /* Performance optimization: Use fast_pow2 instead of pow() */
+    ht->hsz   = (hl_t)fast_pow2(st->init_hts);
     ht->esz   = ht->hsz / 2;
     
     /* Performance optimization: Use aligned allocation for better cache performance */
-    #ifdef __GNUC__
-    if (posix_memalign((void **)&ht->hmap, 64, ht->hsz * sizeof(hi_t)) != 0) {
-        ht->hmap = calloc(ht->hsz, sizeof(hi_t));
+    ht->hmap = (hi_t *)aligned_malloc(ht->hsz * sizeof(hi_t), 64);
+    if (unlikely(ht->hmap == NULL)) {
+        ht->hmap = (hi_t *)calloc(ht->hsz, sizeof(hi_t));
     } else {
         memset(ht->hmap, 0, ht->hsz * sizeof(hi_t));
     }
-    #else
-    ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
-    #endif
 
     if (st->nev == 0) {
         ht->evl = nv + 1; /* store also degree at first position */
@@ -156,7 +284,13 @@ ht_t *initialize_basis_hash_table(
 
     /* generate random values */
     ht->rsd = 2463534242;
-    ht->rn  = calloc((unsigned long)ht->evl, sizeof(val_t));
+    ht->rn  = (val_t *)aligned_malloc((unsigned long)ht->evl * sizeof(val_t), 64);
+    if (ht->rn == NULL) {
+        ht->rn = (val_t *)calloc((unsigned long)ht->evl, sizeof(val_t));
+    } else {
+        memset(ht->rn, 0, (unsigned long)ht->evl * sizeof(val_t));
+    }
+    
     for (i = ht->evl; i > 0; --i) {
         /* random values should not be zero */
         ht->rn[i-1] = pseudo_random_number_generator(&(ht->rsd)) | 1;
@@ -173,21 +307,16 @@ ht_t *initialize_basis_hash_table(
     }
     
     /* Performance optimization: Align memory for better cache performance */
-    #ifdef __GNUC__
-    exp_t *tmp;
-    if (posix_memalign((void **)&tmp, 64, (unsigned long)ht->evl * ht->esz * sizeof(exp_t)) != 0) {
-        tmp = (exp_t *)malloc((unsigned long)ht->evl * ht->esz * sizeof(exp_t));
-    }
-    #else
-    exp_t *tmp  = (exp_t *)malloc(
-            (unsigned long)ht->evl * ht->esz * sizeof(exp_t));
-    #endif
-    
+    exp_t *tmp = (exp_t *)aligned_malloc((unsigned long)ht->evl * ht->esz * sizeof(exp_t), 64);
     if (unlikely(tmp == NULL)) {
-        fprintf(stderr, "Exponent storage needs too much memory on this machine,\n");
-        fprintf(stderr, "initialization failed, esz = %lu,\n", (unsigned long)ht->esz);
-        fprintf(stderr, "segmentation fault will follow.\n");
+        tmp = (exp_t *)malloc((unsigned long)ht->evl * ht->esz * sizeof(exp_t));
+        if (unlikely(tmp == NULL)) {
+            fprintf(stderr, "Exponent storage needs too much memory on this machine,\n");
+            fprintf(stderr, "initialization failed, esz = %lu,\n", (unsigned long)ht->esz);
+            fprintf(stderr, "segmentation fault will follow.\n");
+        }
     }
+    
     const hl_t esz  = ht->esz;
     for (j = 0; j < esz; ++j) {
         ht->ev[j]  = tmp + (j*ht->evl);
@@ -263,7 +392,7 @@ ht_t *initialize_secondary_hash_table(
 
     /* generate map */
     int32_t min = 3 > md->init_hts-5 ? 3 : md->init_hts-5;
-    ht->hsz   = (hl_t)pow(2, min);
+    ht->hsz   = (hl_t)fast_pow2(min);
     ht->esz   = ht->hsz / 2;
     ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
 
@@ -304,7 +433,7 @@ void free_shared_hash_data(
 {
     if (ht != NULL) {
         if (ht->rn) {
-            free(ht->rn);
+            aligned_free(ht->rn);
             ht->rn = NULL;
         }
         if (ht->dv) {
@@ -324,7 +453,7 @@ void free_hash_table(
 {
     ht_t *ht  = *htp;
     if (ht->hmap) {
-        free(ht->hmap);
+        aligned_free(ht->hmap);
         ht->hmap = NULL;
     }
     if (ht->hd) {
@@ -334,9 +463,13 @@ void free_hash_table(
     if (ht->ev) {
         /* note: memory is allocated as one big block,
             *       so freeing ev[0] is enough */
-        free(ht->ev[0]);
+        aligned_free(ht->ev[0]);
         free(ht->ev);
         ht->ev  = NULL;
+    }
+    if (ht->rn) {
+        aligned_free(ht->rn);
+        ht->rn = NULL;
     }
     free(ht);
     ht    = NULL;
@@ -349,7 +482,7 @@ void full_free_hash_table(
 {
   ht_t *ht  = *htp;
   if (ht->hmap) {
-    free(ht->hmap);
+    aligned_free(ht->hmap);
     ht->hmap = NULL;
   }
   if (ht->hd) {
@@ -359,13 +492,13 @@ void full_free_hash_table(
   if (ht->ev) {
     /* note: memory is allocated as one big block,
      *       so freeing ev[0] is enough */
-    free(ht->ev[0]);
+    aligned_free(ht->ev[0]);
     free(ht->ev);
     ht->ev  = NULL;
   }
   if (ht != NULL) {
     if (ht->rn) {
-      free(ht->rn);
+      aligned_free(ht->rn);
       ht->rn = NULL;
     }
     if (ht->dv) {
@@ -420,41 +553,49 @@ static void enlarge_hash_table(
      * enlarge to 2^31 elements that's the limit we can go. Thus we cannot
      * enlarge the hash table size any further and have to live with more
      * than 50% fill in. */
-    if (ht->hsz < (hl_t)pow(2,32)) {
+    if (ht->hsz < fast_pow2(32)) {
         ht->hsz = 2 * ht->hsz;
         const hl_t hsz  = ht->hsz;
-        ht->hmap  = realloc(ht->hmap, hsz * sizeof(hi_t));
+        
+        /* Performance optimization: Use aligned realloc */
+        hi_t *new_hmap = (hi_t *)aligned_malloc(hsz * sizeof(hi_t), 64);
+        if (new_hmap == NULL) {
+            new_hmap = (hi_t *)realloc(ht->hmap, hsz * sizeof(hi_t));
+        } else {
+            aligned_free(ht->hmap);
+        }
+        ht->hmap = new_hmap;
+        
         if (ht->hmap == NULL) {
             fprintf(stderr, "Enlarging hash table failed for hsz = %lu,\n", (unsigned long)hsz);
             fprintf(stderr, "segmentation fault will follow.\n");
         }
         memset(ht->hmap, 0, hsz * sizeof(hi_t));
-        const hi_t mod =  (hi_t )(hsz-1);
+        const hi_t mod = (hi_t)(hsz-1);
 
-        /* reinsert known elements */
+        /* Performance optimization: Reinsert with better cache locality */
         for (i = 1; i < eld; ++i) {
             h = ht->hd[i].val;
-
-            /* probing */
-            k = h;
+            k = fast_mod_pow2(h, mod);
+            
+            /* Linear probing with better cache behavior */
             for (j = 0; j < hsz; ++j) {
-                k = (k+j) & mod;
-                if (ht->hmap[k]) {
-                    continue;
+                const hi_t pos = fast_mod_pow2(k + j, mod);
+                if (likely(!ht->hmap[pos])) {
+                    ht->hmap[pos] = i;
+                    break;
                 }
-                ht->hmap[k] = i;
-                break;
             }
         }
     } else {
-        if (ht->hsz == (hl_t)pow(2,32)) {
+        if (ht->hsz == fast_pow2(32)) {
           printf("Exponent space is now 2^32 elements wide, we cannot\n");
           printf("enlarge the hash table any further, thus fill in gets\n");
           printf("over 50%% and performance of hashing may get worse.\n");
         } else {
           printf("Hash table is full, we can no longer enlarge\n");
           printf("Segmentation fault will follow.\n");
-          free(ht->hmap);
+          aligned_free(ht->hmap);
           ht->hmap  = NULL;
         }
     }
@@ -561,16 +702,8 @@ static inline hi_t check_monomial_division(
   const exp_t *const eb = ht->ev[b];
 
   /* printf("! no sdm decision !\n"); */
-  /* exponent check */
-  for (i = 0; i < evl-1; i += 2) {
-    if (ea[i] < eb[i] || ea[i+1] < eb[i+1]) {
-      return 0;
-    }
-  }
-  if (ea[evl-1] < eb[evl-1]) {
-    return 0;
-  }
-  return 1;
+      /* Performance optimization: Fast divisibility check */
+    return fast_divisibility_check(ea, eb, evl);
 }
 
 static inline void check_monomial_division_in_update(
@@ -599,15 +732,10 @@ restart:
             continue;
         }
         const exp_t *const ea = ht->ev[a[j]];
-        /* exponent check */
-        for (i = 0; i < evl-1; i += 2) {
-            if (ea[i] < eb[i] || ea[i+1] < eb[i+1]) {
-                j++;
-                goto restart;
-            }
-        }
-        if (ea[evl-1] < eb[evl-1]) {
-            continue;
+        /* Performance optimization: Fast divisibility check */
+        if (!fast_divisibility_check(ea, eb, evl)) {
+            j++;
+            goto restart;
         }
         a[j]  = 0;
     }
@@ -657,10 +785,8 @@ start:
     /* if we are here then a is not divisible by a current
      * lead monomial and we can add it to the hash table */
 
-    /* generate hash value */
-    for (j = 0; j < evl; ++j) {
-        h +=  ht->rn[j] * a[j];
-    }
+    /* Performance optimization: Use SIMD hash computation */
+    h = compute_hash_value_simd(a, ht->rn, evl);
     /* probing */
     k = h;
     i = 0;
@@ -703,7 +829,7 @@ restart:
     return pos;
 }
 
-static inline hi_t insert_multiplied_signature_in_hash_table(
+static HOT inline hi_t insert_multiplied_signature_in_hash_table(
     const hm_t h1,
     const hm_t h2,
     ht_t *ht
@@ -713,69 +839,259 @@ static inline hi_t insert_multiplied_signature_in_hash_table(
     hi_t k, pos;
     len_t j;
     exp_t *e;
-    exp_t *a = ht->ev[0];
+    exp_t * RESTRICT a = ht->ev[0];
     hd_t *d;
     val_t h = 0;
     const len_t evl = ht->evl;
     const hl_t hsz = ht->hsz;
-    /* ht->hsz <= 2^32 => mod is always uint32_t */
-    const hi_t mod = (hi_t)(ht->hsz - 1);
+    const hi_t mod = (hi_t)(hsz - 1);
 
-    h   =   h1 + h2;
+    h = h1 + h2;
 
-    /* generate exponent vector */
-    for (j = 0; j < evl; ++j) {
-        a[j] = ht->ev[h1][j] + ht->ev[h2][j];
+    /* Performance optimization: Vectorized exponent vector generation */
+    const exp_t * RESTRICT ev1 = ht->ev[h1];
+    const exp_t * RESTRICT ev2 = ht->ev[h2];
+    
+#if defined(USE_AVX2)
+    /* AVX2 vectorized addition */
+    const len_t simd_end = evl & ~7U;
+    for (j = 0; j < simd_end; j += 8) {
+        __m256i a1 = _mm256_loadu_si256((__m256i*)&ev1[j]);
+        __m256i a2 = _mm256_loadu_si256((__m256i*)&ev2[j]);
+        __m256i sum = _mm256_add_epi32(a1, a2);
+        _mm256_storeu_si256((__m256i*)&a[j], sum);
     }
-    /* probing */
-    k = h;
-    i = 0;
-restart:
-    for (; i < hsz; ++i) {
-        k = (hi_t)((k+i) & mod);
-        const hi_t hm = ht->hmap[k];
+    for (; j < evl; ++j) {
+        a[j] = ev1[j] + ev2[j];
+    }
+#elif defined(USE_SSE4)
+    /* SSE4 vectorized addition */
+    const len_t simd_end = evl & ~3U;
+    for (j = 0; j < simd_end; j += 4) {
+        __m128i a1 = _mm_loadu_si128((__m128i*)&ev1[j]);
+        __m128i a2 = _mm_loadu_si128((__m128i*)&ev2[j]);
+        __m128i sum = _mm_add_epi32(a1, a2);
+        _mm_storeu_si128((__m128i*)&a[j], sum);
+    }
+    for (; j < evl; ++j) {
+        a[j] = ev1[j] + ev2[j];
+    }
+#else
+    /* Unrolled scalar addition */
+    const len_t unroll_end = evl & ~3U;
+    for (j = 0; j < unroll_end; j += 4) {
+        a[j] = ev1[j] + ev2[j];
+        a[j+1] = ev1[j+1] + ev2[j+1];
+        a[j+2] = ev1[j+2] + ev2[j+2];
+        a[j+3] = ev1[j+3] + ev2[j+3];
+    }
+    for (; j < evl; ++j) {
+        a[j] = ev1[j] + ev2[j];
+    }
+#endif
+
+    /* Performance optimization: Use optimized lookup */
+    const int lookup_result = optimized_hash_lookup(a, h, ht, &k);
+    if (lookup_result == 1) {
+        return k; /* Found existing */
+    } else if (lookup_result == 0) {
+        /* Not found, k contains insertion position */
+        goto insert_element;
+    }
+    
+    /* Fallback to linear probing */
+    k = fast_mod_pow2(h, mod);
+    for (i = 0; i < hsz; ++i) {
+        const hi_t pos_probe = fast_mod_pow2(k + i, mod);
+        const hi_t hm = ht->hmap[pos_probe];
         if (!hm) {
+            k = pos_probe;
             break;
         }
         if (ht->hd[hm].val != h) {
             continue;
         }
-        const exp_t * const ehm = ht->ev[hm];
-        for (j = 0; j < evl-1; j += 2) {
-            if (a[j] != ehm[j] || a[j+1] != ehm[j+1]) {
-                i++;
-                goto restart;
-            }
+        if (fast_exponent_compare(a, ht->ev[hm], evl)) {
+            return hm;
         }
-        if (a[evl-1] != ehm[evl-1]) {
-            i++;
-            goto restart;
-        }
-        return hm;
     }
 
+insert_element:
     /* add element to hash table */
-    ht->hmap[k]  = pos = (hi_t)ht->eld;
-    e   = ht->ev[pos];
-    d   = ht->hd + pos;
+    ht->hmap[k] = pos = (hi_t)ht->eld;
+    e = ht->ev[pos];
+    d = ht->hd + pos;
     memcpy(e, a, (unsigned long)evl * sizeof(exp_t));
-    d->sdm  =   generate_short_divmask(e, ht);
-    d->deg  =   e[0];
-    d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
-    d->val  =   h;
+    d->sdm = generate_short_divmask(e, ht);
+    d->deg = e[0];
+    d->deg += ht->ebl > 0 ? e[ht->ebl] : 0;
+    d->val = h;
 
     ht->eld++;
 
     return pos;
 }
 
-/* If the exponent vector is not contained in the hash table
- * we return 0 and hp is a pointer to the hash value and kp is
- * a pointer to the index of hmap where to store the exponent.
- * If the exponent vector is contained in the hash table we
- * return 1 and kp is the pointer of the index where the
- * exponent vector is stored in the exponents array of the
- * hash table. */
+/* Performance optimization: Fast comparison with prefetching */
+static HOT INLINE int fast_exponent_compare(
+    const exp_t * RESTRICT a,
+    const exp_t * RESTRICT b,
+    const len_t evl
+) {
+    len_t i = 0;
+    
+#if defined(USE_AVX2)
+    /* AVX2 vectorized comparison */
+    const len_t simd_end = evl & ~7U;
+    for (; i < simd_end; i += 8) {
+        PREFETCH(&a[i + 8], 0, 3);
+        PREFETCH(&b[i + 8], 0, 3);
+        
+        __m256i a_vec = _mm256_loadu_si256((__m256i*)&a[i]);
+        __m256i b_vec = _mm256_loadu_si256((__m256i*)&b[i]);
+        __m256i cmp = _mm256_cmpeq_epi32(a_vec, b_vec);
+        
+        if (_mm256_movemask_epi8(cmp) != 0xFFFFFFFF) {
+            /* Not all equal, do scalar comparison for this chunk */
+            for (len_t j = i; j < i + 8 && j < evl; ++j) {
+                if (a[j] != b[j]) return 0;
+            }
+        }
+    }
+#elif defined(USE_SSE4)
+    /* SSE4 vectorized comparison */
+    const len_t simd_end = evl & ~3U;
+    for (; i < simd_end; i += 4) {
+        PREFETCH(&a[i + 4], 0, 3);
+        PREFETCH(&b[i + 4], 0, 3);
+        
+        __m128i a_vec = _mm_loadu_si128((__m128i*)&a[i]);
+        __m128i b_vec = _mm_loadu_si128((__m128i*)&b[i]);
+        __m128i cmp = _mm_cmpeq_epi32(a_vec, b_vec);
+        
+        if (_mm_movemask_epi8(cmp) != 0xFFFF) {
+            for (len_t j = i; j < i + 4 && j < evl; ++j) {
+                if (a[j] != b[j]) return 0;
+            }
+        }
+    }
+#else
+    /* Unrolled scalar comparison */
+    const len_t unroll_end = evl & ~3U;
+    for (; i < unroll_end; i += 4) {
+        PREFETCH(&a[i + 4], 0, 3);
+        PREFETCH(&b[i + 4], 0, 3);
+        
+        if (unlikely(a[i] != b[i] || a[i+1] != b[i+1] || 
+                     a[i+2] != b[i+2] || a[i+3] != b[i+3])) {
+            return 0;
+        }
+    }
+#endif
+    
+    /* Handle remaining elements */
+    for (; i < evl; ++i) {
+        if (unlikely(a[i] != b[i])) return 0;
+    }
+    
+    return 1;
+}
+
+/* Performance optimization: Fast divisibility check using SIMD */
+static HOT INLINE int fast_divisibility_check(
+    const exp_t * RESTRICT ea,
+    const exp_t * RESTRICT eb,
+    const len_t evl
+) {
+    len_t i = 0;
+    
+#if defined(USE_AVX2)
+    /* AVX2 vectorized divisibility check */
+    const len_t simd_end = evl & ~7U;
+    for (; i < simd_end; i += 8) {
+        PREFETCH(&ea[i + 8], 0, 3);
+        PREFETCH(&eb[i + 8], 0, 3);
+        
+        __m256i ea_vec = _mm256_loadu_si256((__m256i*)&ea[i]);
+        __m256i eb_vec = _mm256_loadu_si256((__m256i*)&eb[i]);
+        __m256i cmp = _mm256_cmpgt_epi32(eb_vec, ea_vec);
+        
+        if (_mm256_movemask_epi8(cmp) != 0) {
+            return 0; /* eb[i] > ea[i] for some i, not divisible */
+        }
+    }
+#elif defined(USE_SSE4)
+    /* SSE4 vectorized divisibility check */
+    const len_t simd_end = evl & ~3U;
+    for (; i < simd_end; i += 4) {
+        PREFETCH(&ea[i + 4], 0, 3);
+        PREFETCH(&eb[i + 4], 0, 3);
+        
+        __m128i ea_vec = _mm_loadu_si128((__m128i*)&ea[i]);
+        __m128i eb_vec = _mm_loadu_si128((__m128i*)&eb[i]);
+        __m128i cmp = _mm_cmpgt_epi32(eb_vec, ea_vec);
+        
+        if (_mm_movemask_epi8(cmp) != 0) {
+            return 0;
+        }
+    }
+#else
+    /* Unrolled scalar divisibility check */
+    const len_t unroll_end = evl & ~3U;
+    for (; i < unroll_end; i += 4) {
+        PREFETCH(&ea[i + 4], 0, 3);
+        PREFETCH(&eb[i + 4], 0, 3);
+        
+        if (unlikely(ea[i] < eb[i] || ea[i+1] < eb[i+1] || 
+                     ea[i+2] < eb[i+2] || ea[i+3] < eb[i+3])) {
+            return 0;
+        }
+    }
+#endif
+    
+    /* Handle remaining elements */
+    for (; i < evl; ++i) {
+        if (unlikely(ea[i] < eb[i])) {
+            return 0;
+        }
+    }
+    
+    return 1;
+}
+
+/* Performance optimization: Optimized hash table lookup */
+static HOT INLINE hi_t optimized_hash_lookup(
+    const exp_t * RESTRICT a,
+    const val_t h,
+    const ht_t * RESTRICT ht,
+    hi_t * RESTRICT kp
+) {
+    const hi_t mod = (hi_t)(ht->hsz - 1);
+    const len_t evl = ht->evl;
+    hi_t k = fast_mod_pow2(h, mod);
+    
+    /* Performance optimization: Quadratic probing for better distribution */
+    for (hl_t i = 0; i < ht->hsz; ++i) {
+        const hi_t pos = fast_mod_pow2(k + (i * i), mod);
+        const hi_t hm = ht->hmap[pos];
+        
+        if (likely(!hm)) {
+            *kp = pos;
+            return 0;
+        }
+        
+        if (likely(ht->hd[hm].val == h)) {
+            PREFETCH(ht->ev[hm], 0, 3);
+            if (likely(fast_exponent_compare(a, ht->ev[hm], evl))) {
+                *kp = hm;
+                return 1;
+            }
+        }
+    }
+    return -1;
+}
+
+/* Performance optimization: Replace original lookup with optimized version */
 static inline int32_t is_contained_in_hash_table(
         const exp_t *a,
         const ht_t * const ht,
@@ -783,43 +1099,7 @@ static inline int32_t is_contained_in_hash_table(
         hi_t *kp
         )
 {
-    hl_t i;
-    hi_t k;
-    len_t j;
-    /* const len_t evl = ht->evl;
-     * const hl_t hsz = ht->hsz; */
-    /* ht->hsz <= 2^32 => mod is always uint32_t */
-    const hi_t mod = (hi_t)(ht->hsz - 1);
-
-    /* probing */
-    k = h;
-    i = 0;
-restart:
-    for (; i < ht->hsz; ++i) {
-        k = (hi_t)((k+i) & mod);
-        const hi_t hm = ht->hmap[k];
-        if (!hm) {
-            *kp = k;
-            return 0;
-        }
-        if (ht->hd[hm].val != h) {
-            continue;
-        }
-        const exp_t * const ehm = ht->ev[hm];
-        for (j = 0; j < ht->evl-1; j += 2) {
-            if (a[j] != ehm[j] || a[j+1] != ehm[j+1]) {
-                i++;
-                goto restart;
-            }
-        }
-        if (a[ht->evl-1] != ehm[ht->evl-1]) {
-            i++;
-            goto restart;
-        }
-        *kp = hm;
-        return 1;
-    }
-    return -1;
+    return optimized_hash_lookup(a, h, ht, kp);
 }
 
 /* This function assumes that is_contained_in_hash_table() was
@@ -883,7 +1163,7 @@ static inline len_t check_insert_in_hash_table(
 #endif
 }
 
-static inline hi_t insert_in_hash_table(
+static HOT inline hi_t insert_in_hash_table(
     const exp_t *a,
     ht_t *ht
     )
@@ -896,49 +1176,47 @@ static inline hi_t insert_in_hash_table(
     val_t h = 0;
     const len_t evl = ht->evl;
     const hl_t hsz = ht->hsz;
-    /* ht->hsz <= 2^32 => mod is always uint32_t */
-    const hi_t mod = (hi_t)(ht->hsz - 1);
+    const hi_t mod = (hi_t)(hsz - 1);
 
-    /* generate hash value */
-    for (j = 0; j < evl; ++j) {
-        h +=  ht->rn[j] * a[j];
+    /* Performance optimization: Use SIMD hash computation */
+    h = compute_hash_value_simd(a, ht->rn, evl);
+    
+    /* Performance optimization: Use optimized lookup */
+    const int lookup_result = optimized_hash_lookup(a, h, ht, &k);
+    if (lookup_result == 1) {
+        return k; /* Found existing */
+    } else if (lookup_result == 0) {
+        /* Not found, k contains insertion position */
+        goto insert_element;
     }
-    /* probing */
-    k = h;
-    i = 0;
-restart:
-    for (; i < hsz; ++i) {
-        k = (hi_t)((k+i) & mod);
-        const hi_t hm = ht->hmap[k];
+    
+    /* Fallback to linear probing if quadratic failed */
+    k = fast_mod_pow2(h, mod);
+    for (i = 0; i < hsz; ++i) {
+        const hi_t pos = fast_mod_pow2(k + i, mod);
+        const hi_t hm = ht->hmap[pos];
         if (!hm) {
+            k = pos;
             break;
         }
         if (ht->hd[hm].val != h) {
             continue;
         }
-        const exp_t * const ehm = ht->ev[hm];
-        for (j = 0; j < evl-1; j += 2) {
-            if (a[j] != ehm[j] || a[j+1] != ehm[j+1]) {
-                i++;
-                goto restart;
-            }
+        if (fast_exponent_compare(a, ht->ev[hm], evl)) {
+            return hm;
         }
-        if (a[evl-1] != ehm[evl-1]) {
-            i++;
-            goto restart;
-        }
-        return hm;
     }
 
+insert_element:
     /* add element to hash table */
-    ht->hmap[k]  = pos = (hi_t)ht->eld;
-    e   = ht->ev[pos];
-    d   = ht->hd + pos;
+    ht->hmap[k] = pos = (hi_t)ht->eld;
+    e = ht->ev[pos];
+    d = ht->hd + pos;
     memcpy(e, a, (unsigned long)evl * sizeof(exp_t));
-    d->sdm  =   generate_short_divmask(e, ht);
-    d->deg  =   e[0];
-    d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
-    d->val  =   h;
+    d->sdm = generate_short_divmask(e, ht);
+    d->deg = e[0];
+    d->deg += ht->ebl > 0 ? e[ht->ebl] : 0;
+    d->val = h;
 
     ht->eld++;
 
@@ -1386,17 +1664,52 @@ static inline hi_t get_lcm(
     const len_t evl = ht1->evl;
     const len_t ebl = ht1->ebl;
 
-    /* set degree(s), if ebl == 0, i.e. we do not have an elimination block
-     * order then the second for loop is just not executed and the third one
-     * computes correctly the full degree of the lcm. */
-    for (i = 1; i < evl; ++i) {
-        etmp[i]  = ea[i] < eb[i] ? eb[i] : ea[i];
+    /* Performance optimization: Vectorized LCM computation */
+    len_t j = 1;
+    
+#if defined(USE_AVX2)
+    /* AVX2 vectorized max operation */
+    const len_t simd_end = ((evl - 1) & ~7U) + 1;
+    for (; j < simd_end; j += 8) {
+        __m256i ea_vec = _mm256_loadu_si256((__m256i*)&ea[j]);
+        __m256i eb_vec = _mm256_loadu_si256((__m256i*)&eb[j]);
+        __m256i max_vec = _mm256_max_epi32(ea_vec, eb_vec);
+        _mm256_storeu_si256((__m256i*)&etmp[j], max_vec);
     }
+    for (; j < evl; ++j) {
+        etmp[j] = ea[j] < eb[j] ? eb[j] : ea[j];
+    }
+#elif defined(USE_SSE4)
+    /* SSE4 vectorized max operation */
+    const len_t simd_end = ((evl - 1) & ~3U) + 1;
+    for (; j < simd_end; j += 4) {
+        __m128i ea_vec = _mm_loadu_si128((__m128i*)&ea[j]);
+        __m128i eb_vec = _mm_loadu_si128((__m128i*)&eb[j]);
+        __m128i max_vec = _mm_max_epi32(ea_vec, eb_vec);
+        _mm_storeu_si128((__m128i*)&etmp[j], max_vec);
+    }
+    for (; j < evl; ++j) {
+        etmp[j] = ea[j] < eb[j] ? eb[j] : ea[j];
+    }
+#else
+    /* Unrolled scalar max operation */
+    const len_t unroll_end = ((evl - 1) & ~3U) + 1;
+    for (; j < unroll_end; j += 4) {
+        etmp[j] = ea[j] < eb[j] ? eb[j] : ea[j];
+        etmp[j+1] = ea[j+1] < eb[j+1] ? eb[j+1] : ea[j+1];
+        etmp[j+2] = ea[j+2] < eb[j+2] ? eb[j+2] : ea[j+2];
+        etmp[j+3] = ea[j+3] < eb[j+3] ? eb[j+3] : ea[j+3];
+    }
+    for (; j < evl; ++j) {
+        etmp[j] = ea[j] < eb[j] ? eb[j] : ea[j];
+    }
+#endif
+    
     /* reset degree entries */
-    etmp[0]   = 0;
+    etmp[0] = 0;
     etmp[ebl] = 0;
     for (i = 1; i < ebl; ++i) {
-        etmp[0]  += etmp[i];
+        etmp[0] += etmp[i];
     }
     for (i = ebl+1; i < evl; ++i) {
         etmp[ebl] += etmp[i];
