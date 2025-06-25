@@ -37,6 +37,7 @@
 #include <string.h> /* for memset et al. */
 #include <limits.h>
 #include <math.h>
+#include <stddef.h> /* for uintptr_t */
 
 /* Performance optimization: Add alignment and cache-friendly macros */
 #ifdef __GNUC__
@@ -114,27 +115,42 @@ static inline mem_pool_t* create_memory_pool(size_t initial_capacity, size_t ali
     return pool;
 }
 
+/* Performance optimization: Simple safe memory allocation with manual alignment */
+static inline void* aligned_alloc_safe(size_t alignment, size_t size) {
+    /* Use manual alignment to avoid platform-specific function issues */
+    size_t total_size = size + alignment - 1 + sizeof(void*);
+    void *raw_ptr = malloc(total_size);
+    
+    if (!raw_ptr) return NULL;
+    
+    /* Calculate aligned address */
+    char *aligned_ptr = (char*)raw_ptr + sizeof(void*);
+    size_t offset = alignment - ((uintptr_t)aligned_ptr % alignment);
+    if (offset == alignment) offset = 0;
+    aligned_ptr += offset;
+    
+    /* Store original pointer for freeing later */
+    ((void**)aligned_ptr)[-1] = raw_ptr;
+    
+    return aligned_ptr;
+}
+
+static inline void aligned_free_safe(void *ptr) {
+    if (!ptr) return;
+    
+    /* For manual alignment, get the original pointer that was stored */
+    void *original_ptr = ((void**)ptr)[-1];
+    free(original_ptr);
+}
+
 static inline void* pool_alloc(mem_pool_t *pool, size_t size) {
     if (UNLIKELY(!pool)) return malloc(size);
     
     /* Align size to cache line boundary for better performance */
     size = (size + pool->block_alignment - 1) & ~(pool->block_alignment - 1);
     
-    void *ptr;
-    /* Try aligned allocation if available, otherwise use regular malloc */
-    #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
-    if (posix_memalign(&ptr, pool->block_alignment, size) != 0) {
-        ptr = malloc(size);
-    }
-    #elif defined(_WIN32)
-    ptr = _aligned_malloc(size, pool->block_alignment);
-    if (!ptr) {
-        ptr = malloc(size);
-    }
-    #else
-    /* Fallback to regular malloc for systems without aligned allocation */
-    ptr = malloc(size);
-    #endif
+    /* Use safe aligned allocation */
+    void *ptr = aligned_alloc_safe(pool->block_alignment, size);
     
     if (LIKELY(ptr)) {
         /* Grow pool if needed */
