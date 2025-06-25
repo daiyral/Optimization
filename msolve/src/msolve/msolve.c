@@ -2490,7 +2490,70 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
     hit_iteration_limit = 1;
     if (info_level) {
       fprintf(stderr, "WARNING: Iteration limit (%d) reached. Computation may not have fully converged.\n", max_iterations);
-      fprintf(stderr, "Displaying partial results below. Consider increasing precision or adjusting parameters.\n");
+    }
+    
+    /* Make the elimination polynomial square-free to avoid usolve crashes */
+    if ((*mpz_paramp)->elim != NULL && (*mpz_paramp)->elim->length > 1) {
+      /* Find and remove multiple roots at 0 */
+      long deg = (*mpz_paramp)->elim->length - 1;
+      long zero_mult = 0;
+      
+      /* Count multiplicity of zero root */
+      while (zero_mult <= deg && mpz_sgn((*mpz_paramp)->elim->coeffs[zero_mult]) == 0) {
+        zero_mult++;
+      }
+      
+      /* If there are multiple zero roots, remove them */
+      if (zero_mult > 1) {
+        
+        /* Shift coefficients to remove extra zero roots */
+        long new_length = (*mpz_paramp)->elim->length - (zero_mult - 1);
+        for (long i = 0; i < new_length; i++) {
+          mpz_set((*mpz_paramp)->elim->coeffs[i], (*mpz_paramp)->elim->coeffs[i + (zero_mult - 1)]);
+        }
+        (*mpz_paramp)->elim->length = new_length;
+        
+        /* Adjust nsols accordingly */
+        (*mpz_paramp)->nsols = new_length - 1;
+      }
+      
+      /* Remove common content and normalize */
+      mpz_t content;
+      mpz_init(content);
+      
+      /* Compute GCD of all coefficients (content) */
+      if ((*mpz_paramp)->elim->length > 0) {
+        mpz_set(content, (*mpz_paramp)->elim->coeffs[0]);
+        for (long i = 1; i < (*mpz_paramp)->elim->length; i++) {
+          mpz_gcd(content, content, (*mpz_paramp)->elim->coeffs[i]);
+          if (mpz_cmp_ui(content, 1) == 0) {
+            break; /* content is 1, no need to continue */
+          }
+        }
+        
+        /* Remove content if > 1 */
+        if (mpz_cmp_ui(content, 1) > 0) {
+          if (info_level) {
+            fprintf(stderr, "Removing common content from elimination polynomial...\n");
+          }
+          for (long i = 0; i < (*mpz_paramp)->elim->length; i++) {
+            mpz_divexact((*mpz_paramp)->elim->coeffs[i], (*mpz_paramp)->elim->coeffs[i], content);
+          }
+        }
+        
+        /* Make leading coefficient positive */
+        if ((*mpz_paramp)->elim->length > 0 && 
+            mpz_sgn((*mpz_paramp)->elim->coeffs[(*mpz_paramp)->elim->length - 1]) < 0) {
+          if (info_level) {
+            fprintf(stderr, "Making leading coefficient positive...\n");
+          }
+          for (long i = 0; i < (*mpz_paramp)->elim->length; i++) {
+            mpz_neg((*mpz_paramp)->elim->coeffs[i], (*mpz_paramp)->elim->coeffs[i]);
+          }
+        }
+      }
+      
+      mpz_clear(content);
     }
   }
 
