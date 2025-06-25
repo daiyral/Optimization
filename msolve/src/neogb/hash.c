@@ -89,6 +89,165 @@ static INLINE hi_t fast_mod_pow2(hi_t x, hi_t mask) {
 /* The idea of the structure of the hash table is taken from an
  * implementation by Roman Pearce and Michael Monagan in Maple. */
 
+/* Performance optimization: Fast comparison with prefetching */
+static HOT INLINE int fast_exponent_compare(
+    const exp_t * RESTRICT a,
+    const exp_t * RESTRICT b,
+    const len_t evl
+) {
+    len_t i = 0;
+    
+#if defined(USE_AVX2)
+    /* AVX2 vectorized comparison */
+    const len_t simd_end = evl & ~7U;
+    for (; i < simd_end; i += 8) {
+        PREFETCH(&a[i + 8], 0, 3);
+        PREFETCH(&b[i + 8], 0, 3);
+        
+        __m256i a_vec = _mm256_loadu_si256((__m256i*)&a[i]);
+        __m256i b_vec = _mm256_loadu_si256((__m256i*)&b[i]);
+        __m256i cmp = _mm256_cmpeq_epi32(a_vec, b_vec);
+        
+        if (_mm256_movemask_epi8(cmp) != 0xFFFFFFFF) {
+            /* Not all equal, do scalar comparison for this chunk */
+            for (len_t j = i; j < i + 8 && j < evl; ++j) {
+                if (a[j] != b[j]) return 0;
+            }
+        }
+    }
+#elif defined(USE_SSE4)
+    /* SSE4 vectorized comparison */
+    const len_t simd_end = evl & ~3U;
+    for (; i < simd_end; i += 4) {
+        PREFETCH(&a[i + 4], 0, 3);
+        PREFETCH(&b[i + 4], 0, 3);
+        
+        __m128i a_vec = _mm_loadu_si128((__m128i*)&a[i]);
+        __m128i b_vec = _mm_loadu_si128((__m128i*)&b[i]);
+        __m128i cmp = _mm_cmpeq_epi32(a_vec, b_vec);
+        
+        if (_mm_movemask_epi8(cmp) != 0xFFFF) {
+            for (len_t j = i; j < i + 4 && j < evl; ++j) {
+                if (a[j] != b[j]) return 0;
+            }
+        }
+    }
+#else
+    /* Unrolled scalar comparison */
+    const len_t unroll_end = evl & ~3U;
+    for (; i < unroll_end; i += 4) {
+        PREFETCH(&a[i + 4], 0, 3);
+        PREFETCH(&b[i + 4], 0, 3);
+        
+        if (unlikely(a[i] != b[i] || a[i+1] != b[i+1] || 
+                     a[i+2] != b[i+2] || a[i+3] != b[i+3])) {
+            return 0;
+        }
+    }
+#endif
+    
+    /* Handle remaining elements */
+    for (; i < evl; ++i) {
+        if (unlikely(a[i] != b[i])) return 0;
+    }
+    
+    return 1;
+}
+
+/* Performance optimization: Fast divisibility check using SIMD */
+static HOT INLINE int fast_divisibility_check(
+    const exp_t * RESTRICT ea,
+    const exp_t * RESTRICT eb,
+    const len_t evl
+) {
+    len_t i = 0;
+    
+#if defined(USE_AVX2)
+    /* AVX2 vectorized divisibility check */
+    const len_t simd_end = evl & ~7U;
+    for (; i < simd_end; i += 8) {
+        PREFETCH(&ea[i + 8], 0, 3);
+        PREFETCH(&eb[i + 8], 0, 3);
+        
+        __m256i ea_vec = _mm256_loadu_si256((__m256i*)&ea[i]);
+        __m256i eb_vec = _mm256_loadu_si256((__m256i*)&eb[i]);
+        __m256i cmp = _mm256_cmpgt_epi32(eb_vec, ea_vec);
+        
+        if (_mm256_movemask_epi8(cmp) != 0) {
+            return 0; /* eb[i] > ea[i] for some i, not divisible */
+        }
+    }
+#elif defined(USE_SSE4)
+    /* SSE4 vectorized divisibility check */
+    const len_t simd_end = evl & ~3U;
+    for (; i < simd_end; i += 4) {
+        PREFETCH(&ea[i + 4], 0, 3);
+        PREFETCH(&eb[i + 4], 0, 3);
+        
+        __m128i ea_vec = _mm_loadu_si128((__m128i*)&ea[i]);
+        __m128i eb_vec = _mm_loadu_si128((__m128i*)&eb[i]);
+        __m128i cmp = _mm_cmpgt_epi32(eb_vec, ea_vec);
+        
+        if (_mm_movemask_epi8(cmp) != 0) {
+            return 0;
+        }
+    }
+#else
+    /* Unrolled scalar divisibility check */
+    const len_t unroll_end = evl & ~3U;
+    for (; i < unroll_end; i += 4) {
+        PREFETCH(&ea[i + 4], 0, 3);
+        PREFETCH(&eb[i + 4], 0, 3);
+        
+        if (unlikely(ea[i] < eb[i] || ea[i+1] < eb[i+1] || 
+                     ea[i+2] < eb[i+2] || ea[i+3] < eb[i+3])) {
+            return 0;
+        }
+    }
+#endif
+    
+    /* Handle remaining elements */
+    for (; i < evl; ++i) {
+        if (unlikely(ea[i] < eb[i])) {
+            return 0;
+        }
+    }
+    
+    return 1;
+}
+
+/* Performance optimization: Optimized hash table lookup */
+static HOT INLINE hi_t optimized_hash_lookup(
+    const exp_t * RESTRICT a,
+    const val_t h,
+    const ht_t * RESTRICT ht,
+    hi_t * RESTRICT kp
+) {
+    const hi_t mod = (hi_t)(ht->hsz - 1);
+    const len_t evl = ht->evl;
+    hi_t k = fast_mod_pow2(h, mod);
+    
+    /* Performance optimization: Quadratic probing for better distribution */
+    for (hl_t i = 0; i < ht->hsz; ++i) {
+        const hi_t pos = fast_mod_pow2(k + (i * i), mod);
+        const hi_t hm = ht->hmap[pos];
+        
+        if (likely(!hm)) {
+            *kp = pos;
+            return 0;
+        }
+        
+        if (likely(ht->hd[hm].val == h)) {
+            PREFETCH(ht->ev[hm], 0, 3);
+            if (likely(fast_exponent_compare(a, ht->ev[hm], evl))) {
+                *kp = hm;
+                return 1;
+            }
+        }
+    }
+    return -1;
+}
+
 /* Performance optimization: Improved pseudo random number generator with better distribution */
 static INLINE val_t pseudo_random_number_generator(uint32_t * RESTRICT seed) {
     uint32_t rseed = *seed;
@@ -932,164 +1091,7 @@ insert_element:
     return pos;
 }
 
-/* Performance optimization: Fast comparison with prefetching */
-static HOT INLINE int fast_exponent_compare(
-    const exp_t * RESTRICT a,
-    const exp_t * RESTRICT b,
-    const len_t evl
-) {
-    len_t i = 0;
-    
-#if defined(USE_AVX2)
-    /* AVX2 vectorized comparison */
-    const len_t simd_end = evl & ~7U;
-    for (; i < simd_end; i += 8) {
-        PREFETCH(&a[i + 8], 0, 3);
-        PREFETCH(&b[i + 8], 0, 3);
-        
-        __m256i a_vec = _mm256_loadu_si256((__m256i*)&a[i]);
-        __m256i b_vec = _mm256_loadu_si256((__m256i*)&b[i]);
-        __m256i cmp = _mm256_cmpeq_epi32(a_vec, b_vec);
-        
-        if (_mm256_movemask_epi8(cmp) != 0xFFFFFFFF) {
-            /* Not all equal, do scalar comparison for this chunk */
-            for (len_t j = i; j < i + 8 && j < evl; ++j) {
-                if (a[j] != b[j]) return 0;
-            }
-        }
-    }
-#elif defined(USE_SSE4)
-    /* SSE4 vectorized comparison */
-    const len_t simd_end = evl & ~3U;
-    for (; i < simd_end; i += 4) {
-        PREFETCH(&a[i + 4], 0, 3);
-        PREFETCH(&b[i + 4], 0, 3);
-        
-        __m128i a_vec = _mm_loadu_si128((__m128i*)&a[i]);
-        __m128i b_vec = _mm_loadu_si128((__m128i*)&b[i]);
-        __m128i cmp = _mm_cmpeq_epi32(a_vec, b_vec);
-        
-        if (_mm_movemask_epi8(cmp) != 0xFFFF) {
-            for (len_t j = i; j < i + 4 && j < evl; ++j) {
-                if (a[j] != b[j]) return 0;
-            }
-        }
-    }
-#else
-    /* Unrolled scalar comparison */
-    const len_t unroll_end = evl & ~3U;
-    for (; i < unroll_end; i += 4) {
-        PREFETCH(&a[i + 4], 0, 3);
-        PREFETCH(&b[i + 4], 0, 3);
-        
-        if (unlikely(a[i] != b[i] || a[i+1] != b[i+1] || 
-                     a[i+2] != b[i+2] || a[i+3] != b[i+3])) {
-            return 0;
-        }
-    }
-#endif
-    
-    /* Handle remaining elements */
-    for (; i < evl; ++i) {
-        if (unlikely(a[i] != b[i])) return 0;
-    }
-    
-    return 1;
-}
 
-/* Performance optimization: Fast divisibility check using SIMD */
-static HOT INLINE int fast_divisibility_check(
-    const exp_t * RESTRICT ea,
-    const exp_t * RESTRICT eb,
-    const len_t evl
-) {
-    len_t i = 0;
-    
-#if defined(USE_AVX2)
-    /* AVX2 vectorized divisibility check */
-    const len_t simd_end = evl & ~7U;
-    for (; i < simd_end; i += 8) {
-        PREFETCH(&ea[i + 8], 0, 3);
-        PREFETCH(&eb[i + 8], 0, 3);
-        
-        __m256i ea_vec = _mm256_loadu_si256((__m256i*)&ea[i]);
-        __m256i eb_vec = _mm256_loadu_si256((__m256i*)&eb[i]);
-        __m256i cmp = _mm256_cmpgt_epi32(eb_vec, ea_vec);
-        
-        if (_mm256_movemask_epi8(cmp) != 0) {
-            return 0; /* eb[i] > ea[i] for some i, not divisible */
-        }
-    }
-#elif defined(USE_SSE4)
-    /* SSE4 vectorized divisibility check */
-    const len_t simd_end = evl & ~3U;
-    for (; i < simd_end; i += 4) {
-        PREFETCH(&ea[i + 4], 0, 3);
-        PREFETCH(&eb[i + 4], 0, 3);
-        
-        __m128i ea_vec = _mm_loadu_si128((__m128i*)&ea[i]);
-        __m128i eb_vec = _mm_loadu_si128((__m128i*)&eb[i]);
-        __m128i cmp = _mm_cmpgt_epi32(eb_vec, ea_vec);
-        
-        if (_mm_movemask_epi8(cmp) != 0) {
-            return 0;
-        }
-    }
-#else
-    /* Unrolled scalar divisibility check */
-    const len_t unroll_end = evl & ~3U;
-    for (; i < unroll_end; i += 4) {
-        PREFETCH(&ea[i + 4], 0, 3);
-        PREFETCH(&eb[i + 4], 0, 3);
-        
-        if (unlikely(ea[i] < eb[i] || ea[i+1] < eb[i+1] || 
-                     ea[i+2] < eb[i+2] || ea[i+3] < eb[i+3])) {
-            return 0;
-        }
-    }
-#endif
-    
-    /* Handle remaining elements */
-    for (; i < evl; ++i) {
-        if (unlikely(ea[i] < eb[i])) {
-            return 0;
-        }
-    }
-    
-    return 1;
-}
-
-/* Performance optimization: Optimized hash table lookup */
-static HOT INLINE hi_t optimized_hash_lookup(
-    const exp_t * RESTRICT a,
-    const val_t h,
-    const ht_t * RESTRICT ht,
-    hi_t * RESTRICT kp
-) {
-    const hi_t mod = (hi_t)(ht->hsz - 1);
-    const len_t evl = ht->evl;
-    hi_t k = fast_mod_pow2(h, mod);
-    
-    /* Performance optimization: Quadratic probing for better distribution */
-    for (hl_t i = 0; i < ht->hsz; ++i) {
-        const hi_t pos = fast_mod_pow2(k + (i * i), mod);
-        const hi_t hm = ht->hmap[pos];
-        
-        if (likely(!hm)) {
-            *kp = pos;
-            return 0;
-        }
-        
-        if (likely(ht->hd[hm].val == h)) {
-            PREFETCH(ht->ev[hm], 0, 3);
-            if (likely(fast_exponent_compare(a, ht->ev[hm], evl))) {
-                *kp = hm;
-                return 1;
-            }
-        }
-    }
-    return -1;
-}
 
 /* Performance optimization: Replace original lookup with optimized version */
 static inline int32_t is_contained_in_hash_table(
