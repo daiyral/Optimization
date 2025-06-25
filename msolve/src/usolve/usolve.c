@@ -43,7 +43,17 @@
 
 #define ilog2(a) mpz_sizeinbase(a,2)
 
+#ifdef _WIN32
+/* Windows-compatible LOG2 implementation */
+static inline unsigned int LOG2(unsigned long long X) {
+  if (X == 0) return 0;
+  unsigned int result = 0;
+  while (X >>= 1) result++;
+  return result;
+}
+#else
 #define LOG2(X) ((unsigned) (8*sizeof (unsigned long long) - __builtin_clzll((X)) - 1))
+#endif
 #define ilog2_mpz(a) mpz_sizeinbase(a,2)
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
