@@ -2272,13 +2272,7 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
   /* measures time spent in rational reconstruction */
   double strat = 0;
 
-  /* Prevent infinite loops by limiting iterations */
-  int max_iterations = 4096;
-  int iteration_count = 0;
-  int hit_iteration_limit = 0;
-
-  while ((rerun == 1 || mcheck == 1) && iteration_count < max_iterations) {
-    iteration_count++;
+  while (rerun == 1 || mcheck == 1) {
     /* controls call to rational reconstruction */
     doit = ((prdone % nbdoit) == 0);
 
@@ -2485,77 +2479,7 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
     }
   }
 
-  /* Check if we exceeded the iteration limit */
-  if (iteration_count >= max_iterations) {
-    hit_iteration_limit = 1;
-    if (info_level) {
-      fprintf(stderr, "WARNING: Iteration limit (%d) reached. Computation may not have fully converged.\n", max_iterations);
-    }
-    
-    /* Make the elimination polynomial square-free to avoid usolve crashes */
-    if ((*mpz_paramp)->elim != NULL && (*mpz_paramp)->elim->length > 1) {
-      /* Find and remove multiple roots at 0 */
-      long deg = (*mpz_paramp)->elim->length - 1;
-      long zero_mult = 0;
-      
-      /* Count multiplicity of zero root */
-      while (zero_mult <= deg && mpz_sgn((*mpz_paramp)->elim->coeffs[zero_mult]) == 0) {
-        zero_mult++;
-      }
-      
-      /* If there are multiple zero roots, remove them */
-      if (zero_mult > 1) {
-        
-        /* Shift coefficients to remove extra zero roots */
-        long new_length = (*mpz_paramp)->elim->length - (zero_mult - 1);
-        for (long i = 0; i < new_length; i++) {
-          mpz_set((*mpz_paramp)->elim->coeffs[i], (*mpz_paramp)->elim->coeffs[i + (zero_mult - 1)]);
-        }
-        (*mpz_paramp)->elim->length = new_length;
-        
-        /* Adjust nsols accordingly */
-        (*mpz_paramp)->nsols = new_length - 1;
-      }
-      
-      /* Remove common content and normalize */
-      mpz_t content;
-      mpz_init(content);
-      
-      /* Compute GCD of all coefficients (content) */
-      if ((*mpz_paramp)->elim->length > 0) {
-        mpz_set(content, (*mpz_paramp)->elim->coeffs[0]);
-        for (long i = 1; i < (*mpz_paramp)->elim->length; i++) {
-          mpz_gcd(content, content, (*mpz_paramp)->elim->coeffs[i]);
-          if (mpz_cmp_ui(content, 1) == 0) {
-            break; /* content is 1, no need to continue */
-          }
-        }
-        
-        /* Remove content if > 1 */
-        if (mpz_cmp_ui(content, 1) > 0) {
-          if (info_level) {
-            fprintf(stderr, "Removing common content from elimination polynomial...\n");
-          }
-          for (long i = 0; i < (*mpz_paramp)->elim->length; i++) {
-            mpz_divexact((*mpz_paramp)->elim->coeffs[i], (*mpz_paramp)->elim->coeffs[i], content);
-          }
-        }
-        
-        /* Make leading coefficient positive */
-        if ((*mpz_paramp)->elim->length > 0 && 
-            mpz_sgn((*mpz_paramp)->elim->coeffs[(*mpz_paramp)->elim->length - 1]) < 0) {
-          if (info_level) {
-            fprintf(stderr, "Making leading coefficient positive...\n");
-          }
-          for (long i = 0; i < (*mpz_paramp)->elim->length; i++) {
-            mpz_neg((*mpz_paramp)->elim->coeffs[i], (*mpz_paramp)->elim->coeffs[i]);
-          }
-        }
-      }
-      
-      mpz_clear(content);
-    }
-  }
+
 
   (*mpz_paramp)->denom->length = (*mpz_paramp)->nsols;
   for (long i = 1; i <= (*mpz_paramp)->nsols; i++) {
@@ -2577,10 +2501,6 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
     fprintf(stdout,"\n---------- COMPUTATIONAL DATA -----------\n");
     fprintf(stdout, "#primes            %16lu\n", (unsigned long) nprimes);
     fprintf(stdout, "#bad primes        %16lu\n", (unsigned long) nbadprimes);
-    fprintf(stdout, "#iterations        %16d\n", iteration_count);
-    if (hit_iteration_limit) {
-      fprintf(stdout, "WARNING: Hit iteration limit - results may be incomplete!\n");
-    }
     fprintf(stdout, "-----------------------------------------\n");
     fprintf(stdout, "\n---------------- TIMINGS ----------------\n");
     fprintf(stdout, "CRT and ratrecon(elapsed) %10.2f sec\n", st->fglm_rtime);
