@@ -22,14 +22,6 @@
 #ifndef GB_DATA_H
 #define GB_DATA_H
 
-/* Feature test macros for posix_memalign */
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200112L
-#endif
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -37,20 +29,6 @@
 #include <string.h> /* for memset et al. */
 #include <limits.h>
 #include <math.h>
-#include <stddef.h> /* for uintptr_t */
-
-/* Performance optimization: Add alignment and cache-friendly macros */
-#ifdef __GNUC__
-#define CACHE_ALIGNED __attribute__((aligned(64)))
-#define LIKELY(x)     __builtin_expect(!!(x), 1)
-#define UNLIKELY(x)   __builtin_expect(!!(x), 0)
-#define RESTRICT      __restrict__
-#else
-#define CACHE_ALIGNED
-#define LIKELY(x)     (x)
-#define UNLIKELY(x)   (x)
-#define RESTRICT
-#endif
 
 /* check if OpenMP is available */
 #ifdef _OPENMP
@@ -63,10 +41,12 @@ static inline omp_int_t omp_get_max_threads(void) { return 1;}
 
 #define PARALLEL_HASHING 0
 #define ORDER_COLUMNS 1
-
-/* Performance optimization: Enhanced loop unrolling constants */
+/* loop unrolling in sparse linear algebra:
+ * we store the offset of the first elements not unrolled
+ * in the second entry of the sparse row resp. sparse polynomial.
+ * NOTE: if one changes UNROLL then also code needs to be changed:
+ * the unrolled loops are hardcoded to 4 at the moment */
 #define UNROLL  4
-#define UNROLL_LARGE 8   /* For larger loops where more unrolling is beneficial */
 
 /* we store some more information in the row arrays,
  * real data starts at index OFFSET */
@@ -87,87 +67,6 @@ static inline omp_int_t omp_get_max_threads(void) { return 1;}
 #define SM_CFS   (SM_OFFSET-3)  /* index of corresponding coefficient array */
 #define SM_SIDX  (SM_OFFSET-4)  /* index of signautre */
 #define SM_SMON  (SM_OFFSET-5)  /* hash value of signature monomial */
-
-/* Performance optimization: Memory pool for frequent allocations */
-typedef struct mem_pool_t mem_pool_t;
-struct mem_pool_t
-{
-    void **blocks;          /* Array of allocated blocks */
-    size_t *block_sizes;    /* Size of each block */
-    size_t num_blocks;      /* Number of allocated blocks */
-    size_t capacity;        /* Capacity of blocks array */
-    size_t total_allocated; /* Total memory allocated */
-    size_t block_alignment; /* Alignment requirement */
-};
-
-/* Performance optimization: Optimized memory allocation functions */
-static inline mem_pool_t* create_memory_pool(size_t initial_capacity, size_t alignment) {
-    mem_pool_t *pool = (mem_pool_t*)malloc(sizeof(mem_pool_t));
-    if (UNLIKELY(!pool)) return NULL;
-    
-    pool->blocks = (void**)malloc(initial_capacity * sizeof(void*));
-    pool->block_sizes = (size_t*)malloc(initial_capacity * sizeof(size_t));
-    pool->num_blocks = 0;
-    pool->capacity = initial_capacity;
-    pool->total_allocated = 0;
-    pool->block_alignment = alignment;
-    
-    return pool;
-}
-
-/* Performance optimization: Simple safe memory allocation with manual alignment */
-static inline void* aligned_alloc_safe(size_t alignment, size_t size) {
-    /* Use manual alignment to avoid platform-specific function issues */
-    size_t total_size = size + alignment - 1 + sizeof(void*);
-    void *raw_ptr = malloc(total_size);
-    
-    if (!raw_ptr) return NULL;
-    
-    /* Calculate aligned address */
-    char *aligned_ptr = (char*)raw_ptr + sizeof(void*);
-    size_t offset = alignment - ((uintptr_t)aligned_ptr % alignment);
-    if (offset == alignment) offset = 0;
-    aligned_ptr += offset;
-    
-    /* Store original pointer for freeing later */
-    ((void**)aligned_ptr)[-1] = raw_ptr;
-    
-    return aligned_ptr;
-}
-
-static inline void aligned_free_safe(void *ptr) {
-    if (!ptr) return;
-    
-    /* For manual alignment, get the original pointer that was stored */
-    void *original_ptr = ((void**)ptr)[-1];
-    free(original_ptr);
-}
-
-static inline void* pool_alloc(mem_pool_t *pool, size_t size) {
-    if (UNLIKELY(!pool)) return malloc(size);
-    
-    /* Align size to cache line boundary for better performance */
-    size = (size + pool->block_alignment - 1) & ~(pool->block_alignment - 1);
-    
-    /* Use safe aligned allocation */
-    void *ptr = aligned_alloc_safe(pool->block_alignment, size);
-    
-    if (LIKELY(ptr)) {
-        /* Grow pool if needed */
-        if (pool->num_blocks >= pool->capacity) {
-            pool->capacity *= 2;
-            pool->blocks = (void**)realloc(pool->blocks, pool->capacity * sizeof(void*));
-            pool->block_sizes = (size_t*)realloc(pool->block_sizes, pool->capacity * sizeof(size_t));
-        }
-        
-        pool->blocks[pool->num_blocks] = ptr;
-        pool->block_sizes[pool->num_blocks] = size;
-        pool->num_blocks++;
-        pool->total_allocated += size;
-    }
-    
-    return ptr;
-}
 
 /* computational data */
 typedef uint8_t cf8_t;   /* coefficient type finite field (8 bit) */
@@ -198,7 +97,7 @@ struct hd_t
     sdm_t sdm;
     ind_t idx;
     deg_t deg;
-} CACHE_ALIGNED;
+};
 
 /* 
  * Exponent vectors look the following for n variables:
@@ -242,8 +141,7 @@ struct ht_t
     len_t bpv;    /* bits per variable in divmask */
     val_t *rn;    /* random numbers for hash generation */
     uint32_t rsd; /* seed for random number generator */
-    mem_pool_t *mem_pool; /* Performance optimization: Memory pool for hash table allocations */
-} CACHE_ALIGNED;
+};
 
 /* S-pair types */
 typedef enum {S_PAIR, GCD_PAIR, GEN_PAIR} spt_t;
