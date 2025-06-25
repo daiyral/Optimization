@@ -291,8 +291,20 @@ static inline void update_indices(int32_t *ind, int32_t *basis,
  */
 static inline int32_t *monomial_basis(long length, long nvars,
                                       int32_t *bexp_lm, long *dquot){
+  /* Bounds checking to prevent allocation warnings and potential issues */
+  if (nvars <= 0 || nvars > 1000) {
+    fprintf(stderr, "Invalid nvars=%ld in monomial_basis\n", nvars);
+    *dquot = 0;
+    return NULL;
+  }
+  
   /* basis will contain the monomial basis */
-  int32_t *basis = calloc(nvars, sizeof(int32_t));
+  int32_t *basis = calloc((size_t)nvars, sizeof(int32_t));
+  if (!basis) {
+    fprintf(stderr, "Failed to allocate basis in monomial_basis\n");
+    *dquot = 0;
+    return NULL;
+  }
   (*dquot) = 0;
 
   if(is_divisible_lexp(nvars, length, (basis), bexp_lm)){
@@ -302,7 +314,13 @@ static inline int32_t *monomial_basis(long length, long nvars,
   else{
     (*dquot)++;
   }
-  int32_t *ind = calloc(nvars, sizeof(int32_t));
+  int32_t *ind = calloc((size_t)nvars, sizeof(int32_t));
+  if (!ind) {
+    fprintf(stderr, "Failed to allocate ind in monomial_basis\n");
+    free(basis);
+    *dquot = 0;
+    return NULL;
+  }
 
 #ifdef DEBUGHILBERT
   fprintf(stderr, "new = %ld \n", sum(ind, nvars) + nvars);
@@ -371,7 +389,19 @@ static inline int32_t *monomial_basis(long length, long nvars,
 static inline int32_t *monomial_basis_colon(long length, long nvars,
 					    int32_t *bexp_lm, long *dquot,
 					    const long maxdeg){
-  int32_t *basis = calloc(nvars, sizeof(int32_t));
+  /* Bounds checking to prevent allocation warnings and potential issues */
+  if (nvars <= 0 || nvars > 1000) {
+    fprintf(stderr, "Invalid nvars=%ld in monomial_basis_colon\n", nvars);
+    *dquot = 0;
+    return NULL;
+  }
+  
+  int32_t *basis = calloc((size_t)nvars, sizeof(int32_t));
+  if (!basis) {
+    fprintf(stderr, "Failed to allocate basis in monomial_basis_colon\n");
+    *dquot = 0;
+    return NULL;
+  }
   (*dquot) = 0;
 
   if(is_divisible_lexp(nvars, length, (basis), bexp_lm)){
@@ -382,7 +412,13 @@ static inline int32_t *monomial_basis_colon(long length, long nvars,
   else{
     (*dquot)++;
   }
-  int32_t *ind = calloc(nvars, sizeof(int32_t));
+  int32_t *ind = calloc((size_t)nvars, sizeof(int32_t));
+  if (!ind) {
+    fprintf(stderr, "Failed to allocate ind in monomial_basis_colon\n");
+    free(basis);
+    *dquot = 0;
+    return NULL;
+  }
 
 #ifdef DEBUGHILBERT
   fprintf(stderr, "new = %ld \n", sum(ind, nvars) + nvars);
@@ -452,7 +488,19 @@ static inline int32_t *monomial_basis_colon(long length, long nvars,
 static inline int32_t *monomial_basis_colon_no_zero(long length, long nvars,
 						    int32_t *bexp_lm, long *dquot,
 						    const long maxdeg){
-  int32_t *basis = calloc(nvars, sizeof(int32_t));
+  /* Bounds checking to prevent allocation warnings and potential issues */
+  if (nvars <= 0 || nvars > 1000) {
+    fprintf(stderr, "Invalid nvars=%ld in monomial_basis_colon_no_zero\n", nvars);
+    *dquot = 0;
+    return NULL;
+  }
+  
+  int32_t *basis = calloc((size_t)nvars, sizeof(int32_t));
+  if (!basis) {
+    fprintf(stderr, "Failed to allocate basis in monomial_basis_colon_no_zero\n");
+    *dquot = 0;
+    return NULL;
+  }
   (*dquot) = 0;
 
   if(is_divisible_lexp(nvars, length, (basis), bexp_lm)){
@@ -463,7 +511,13 @@ static inline int32_t *monomial_basis_colon_no_zero(long length, long nvars,
   else{
     (*dquot)++;
   }
-  int32_t *ind = calloc(nvars, sizeof(int32_t));
+  int32_t *ind = calloc((size_t)nvars, sizeof(int32_t));
+  if (!ind) {
+    fprintf(stderr, "Failed to allocate ind in monomial_basis_colon_no_zero\n");
+    free(basis);
+    *dquot = 0;
+    return NULL;
+  }
 
 #ifdef DEBUGHILBERT
   fprintf(stderr, "new = %ld \n", sum(ind, nvars) + nvars);
@@ -1366,11 +1420,22 @@ static inline void copy_nf_in_matrix_from_bs_32(sp_matfglm_t* matrix,
  */
 static inline int32_t *monomial_basis_enlarged(long length, long nvars,
                                                int32_t *bexp_lm, long *dquot){
+  /* Bounds checking to prevent allocation warnings and potential issues */
+  if (nvars <= 0 || nvars > 1000) {
+    fprintf(stderr, "Invalid nvars=%ld in monomial_basis_enlarged\n", nvars);
+    *dquot = 0;
+    return NULL;
+  }
 
   int32_t maxdeg = sum(bexp_lm+(length-1)*(nvars), nvars);
 
   /* basis will contain the monomial basis */
-  int32_t *basis = calloc(nvars, sizeof(int32_t));
+  int32_t *basis = calloc((size_t)nvars, sizeof(int32_t));
+  if (!basis) {
+    fprintf(stderr, "Failed to allocate basis in monomial_basis_enlarged\n");
+    *dquot = 0;
+    return NULL;
+  }
   (*dquot) = 0;
 
   int32_t deg = 0;
@@ -1383,7 +1448,13 @@ static inline int32_t *monomial_basis_enlarged(long length, long nvars,
     (*dquot)++;
   }
 
-  int32_t *ind = calloc(nvars, sizeof(int32_t));
+  int32_t *ind = calloc((size_t)nvars, sizeof(int32_t));
+  if (!ind) {
+    fprintf(stderr, "Failed to allocate ind in monomial_basis_enlarged\n");
+    free(basis);
+    *dquot = 0;
+    return NULL;
+  }
 
 #ifdef DEBUGHILBERT
   fprintf(stderr, "new = %ld \n", sum(ind, nvars) + nvars);

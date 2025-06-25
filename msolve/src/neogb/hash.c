@@ -30,7 +30,60 @@
 /* The idea of the structure of the hash table is taken from an
  * implementation by Roman Pearce and Michael Monagan in Maple. */
 
-static val_t pseudo_random_number_generator(
+#ifdef _WIN32
+/* Windows-specific optimizations for hash table performance */
+#define WIN_HASH_MAX_SIZE (32 * 1024 * 1024)      // 32MB limit for hash tables
+#define WIN_HASH_FORCE_MALLOC_THRESHOLD (2 * 1024 * 1024)  // 2MB threshold
+#define WIN_MAX_HASH_ELEMENTS 1048576              // Max hash elements before warning
+
+static inline void* win_alloc_hash_memory(size_t size) {
+    if (size > WIN_HASH_FORCE_MALLOC_THRESHOLD) {
+        // Use malloc for large allocations (faster on Windows)
+        void *ptr = malloc(size);
+        if (!ptr) {
+            fprintf(stderr, "Windows hash allocation failed for size %zu\n", size);
+        }
+        return ptr;
+    } else {
+        // Use calloc for smaller allocations
+        return calloc(1, size);
+    }
+}
+
+static inline void win_free_hash_memory(void *ptr) {
+    if (ptr) {
+        free(ptr);
+    }
+}
+
+static inline int win_check_hash_size(size_t elements, size_t element_size, const char* context) {
+    size_t total_size = elements * element_size;
+    if (total_size > WIN_HASH_MAX_SIZE) {
+        fprintf(stderr, "Warning: %s hash table too large for Windows: %zu elements, %zu MB\n",
+                context, elements, total_size / (1024 * 1024));
+        fprintf(stderr, "Consider reducing problem size or using Linux for better performance.\n");
+        return -1;  // Too large
+    }
+    if (elements > WIN_MAX_HASH_ELEMENTS) {
+        fprintf(stderr, "Warning: %s hash table has %zu elements (Windows may be slow)\n",
+                context, elements);
+        return 0;   // Large but OK
+    }
+    return 1;       // OK
+}
+
+#define WIN_HASH_FREE(ptr) win_free_hash_memory(ptr)
+#else
+#define WIN_HASH_FREE(ptr) free(ptr)
+static inline void* win_alloc_hash_memory(size_t size) {
+    return calloc(1, size);
+}
+static inline int win_check_hash_size(size_t elements, size_t element_size, const char* context) {
+    return 1;  // Always OK on non-Windows
+}
+#endif
+
+static uint32_t pseudo_random_number_generator(
     uint32_t *seed
     )
 {
@@ -39,7 +92,7 @@ static val_t pseudo_random_number_generator(
     rseed ^=  (rseed >> 17);
     rseed ^=  (rseed << 5);
     *seed =   rseed;
-    return (val_t)rseed;
+    return rseed;  // Return uint32_t directly instead of casting to val_t
 }
 
 ht_t *initialize_basis_hash_table(
@@ -54,17 +107,20 @@ ht_t *initialize_basis_hash_table(
     ht_t *ht  = (ht_t *)malloc(sizeof(ht_t));
     ht->nv    = nv;
     /* generate map */
-    ht->bpv = (len_t)((CHAR_BIT * sizeof(sdm_t)) / (unsigned long)nv);
+    ht->bpv = (len_t)((CHAR_BIT * sizeof(sdm_t)) / (size_t)nv);
     if (ht->bpv == 0) {
         ht->bpv++;
     }
-    ht->ndv = (unsigned long)nv < (CHAR_BIT * sizeof(sdm_t)) ?
+    ht->ndv = (size_t)nv < (CHAR_BIT * sizeof(sdm_t)) ?
         nv : (len_t)((CHAR_BIT * sizeof(sdm_t)));
-    ht->dv  = (len_t *)calloc((unsigned long)ht->ndv, sizeof(len_t));
+    ht->dv  = (len_t *)calloc((size_t)ht->ndv, sizeof(len_t));
 
-    ht->hsz   = (hl_t)pow(2, st->init_hts);
+    ht->hsz   = (hl_t)(1u << st->init_hts);  // Replace pow(2, st->init_hts)
     ht->esz   = ht->hsz / 2;
-    ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
+    
+    // Windows-specific size check and allocation
+    win_check_hash_size(ht->hsz, sizeof(hi_t), "basis");
+    ht->hmap  = (hi_t*)win_alloc_hash_memory(ht->hsz * sizeof(hi_t));
 
     if (st->nev == 0) {
         ht->evl = nv + 1; /* store also degree at first position */
@@ -93,30 +149,35 @@ ht_t *initialize_basis_hash_table(
     }
     /* generate divmask map */
     ht->dm  = (sdm_t *)calloc(
-            (unsigned long)(ht->ndv * ht->bpv), sizeof(sdm_t));
+            (size_t)(ht->ndv * ht->bpv), sizeof(sdm_t));
 
     /* generate random values */
     ht->rsd = 2463534242;
-    ht->rn  = calloc((unsigned long)ht->evl, sizeof(val_t));
+    ht->rn  = calloc((size_t)ht->evl, sizeof(val_t));
     for (i = ht->evl; i > 0; --i) {
         /* random values should not be zero */
-        ht->rn[i-1] = pseudo_random_number_generator(&(ht->rsd)) | 1;
+        ht->rn[i-1] = (val_t)pseudo_random_number_generator(&(ht->rsd)) | 1;
     }
     /* generate exponent vector */
     /* keep first entry empty for faster divisibility checks */
     ht->eld = 1;
     ht->hd  = (hd_t *)calloc(ht->esz, sizeof(hd_t));
-    ht->ev  = (exp_t **)malloc(ht->esz * sizeof(exp_t *));
+    
+    // Windows-specific allocation for exponent vectors
+    win_check_hash_size(ht->esz, sizeof(exp_t *), "exponent pointer");
+    ht->ev  = (exp_t **)win_alloc_hash_memory(ht->esz * sizeof(exp_t *));
     if (ht->ev == NULL) {
         fprintf(stderr, "Computation needs too much memory on this machine,\n");
         fprintf(stderr, "could not initialize exponent vector for hash table,\n");
-        fprintf(stderr, "esz = %lu, segmentation fault will follow.\n", (unsigned long)ht->esz);
+        fprintf(stderr, "esz = %zu, segmentation fault will follow.\n", (size_t)ht->esz);
     }
-    exp_t *tmp  = (exp_t *)malloc(
-            (unsigned long)ht->evl * ht->esz * sizeof(exp_t));
+    
+    size_t exp_total_size = (size_t)ht->evl * ht->esz * sizeof(exp_t);
+    win_check_hash_size(ht->evl * ht->esz, sizeof(exp_t), "exponent storage");
+    exp_t *tmp  = (exp_t *)win_alloc_hash_memory(exp_total_size);
     if (tmp == NULL) {
         fprintf(stderr, "Exponent storage needs too much memory on this machine,\n");
-        fprintf(stderr, "initialization failed, esz = %lu,\n", (unsigned long)ht->esz);
+        fprintf(stderr, "initialization failed, esz = %zu,\n", (size_t)ht->esz);
         fprintf(stderr, "segmentation fault will follow.\n");
     }
     const hl_t esz  = ht->esz;
@@ -141,36 +202,38 @@ ht_t *copy_hash_table(
     ht->hsz   = bht->hsz;
     ht->esz   = bht->esz;
 
-    ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
-    memcpy(ht->hmap, bht->hmap, (unsigned long)ht->hsz * sizeof(hi_t));
+    win_check_hash_size(ht->hsz, sizeof(hi_t), "copy basis");
+    ht->hmap  = (hi_t*)win_alloc_hash_memory(ht->hsz * sizeof(hi_t));
+    memcpy(ht->hmap, bht->hmap, (size_t)ht->hsz * sizeof(hi_t));
 
     ht->ndv = bht->ndv;
     ht->bpv = bht->bpv;
     ht->dm  = bht->dm;
     ht->rn  = bht->rn;
 
-    ht->dv  = (len_t *)calloc((unsigned long)ht->ndv, sizeof(len_t));
-    memcpy(ht->dv, bht->dv, (unsigned long)ht->ndv * sizeof(len_t));
+    ht->dv  = (len_t *)calloc((size_t)ht->ndv, sizeof(len_t));
+    memcpy(ht->dv, bht->dv, (size_t)ht->ndv * sizeof(len_t));
 
     /* generate exponent vector */
     /* keep first entry empty for faster divisibility checks */
     ht->hd  = (hd_t *)calloc(ht->esz, sizeof(hd_t));
 
-    memcpy(ht->hd, bht->hd, (unsigned long)ht->esz * sizeof(hd_t));
-    ht->ev  = (exp_t **)malloc(ht->esz * sizeof(exp_t *));
+    memcpy(ht->hd, bht->hd, (size_t)ht->esz * sizeof(hd_t));
+    ht->ev  = (exp_t **)win_alloc_hash_memory(ht->esz * sizeof(exp_t *));
     if (ht->ev == NULL) {
         fprintf(stderr, "Computation needs too much memory on this machine,\n");
         fprintf(stderr, "could not initialize exponent vector for hash table,\n");
-        fprintf(stderr, "esz = %lu, segmentation fault will follow.\n", (unsigned long)ht->esz);
+        fprintf(stderr, "esz = %zu, segmentation fault will follow.\n", (size_t)ht->esz);
     }
-    exp_t *tmp  = (exp_t *)malloc(
-            (unsigned long)ht->evl * ht->esz * sizeof(exp_t));
+    
+    size_t exp_total_size = (size_t)ht->evl * ht->esz * sizeof(exp_t);
+    exp_t *tmp  = (exp_t *)win_alloc_hash_memory(exp_total_size);
     if (tmp == NULL) {
         fprintf(stderr, "Exponent storage needs too much memory on this machine,\n");
-        fprintf(stderr, "initialization failed, esz = %lu,\n", (unsigned long)ht->esz);
+        fprintf(stderr, "initialization failed, esz = %zu,\n", (size_t)ht->esz);
         fprintf(stderr, "segmentation fault will follow.\n");
     }
-    memcpy(tmp, bht->ev[0], (unsigned long)ht->evl * ht->esz * sizeof(exp_t));
+    memcpy(tmp, bht->ev[0], (size_t)ht->evl * ht->esz * sizeof(exp_t));
     ht->eld = bht->eld;
     const hl_t esz  = ht->esz;
     for (j = 0; j < esz; ++j) {
@@ -194,9 +257,11 @@ ht_t *initialize_secondary_hash_table(
 
     /* generate map */
     int32_t min = 3 > md->init_hts-5 ? 3 : md->init_hts-5;
-    ht->hsz   = (hl_t)pow(2, min);
+    ht->hsz   = (hl_t)(1u << min);  // Replace pow(2, min)
     ht->esz   = ht->hsz / 2;
-    ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
+    
+    win_check_hash_size(ht->hsz, sizeof(hi_t), "secondary");
+    ht->hmap  = (hi_t*)win_alloc_hash_memory(ht->hsz * sizeof(hi_t));
 
     /* divisor mask and random number seeds from basis hash table */
     ht->ndv = bht->ndv;
@@ -209,17 +274,18 @@ ht_t *initialize_secondary_hash_table(
     /* keep first entry empty for faster divisibility checks */
     ht->eld = 1;
     ht->hd  = (hd_t *)calloc(ht->esz, sizeof(hd_t));
-    ht->ev  = (exp_t **)malloc(ht->esz * sizeof(exp_t *));
+    ht->ev  = (exp_t **)win_alloc_hash_memory(ht->esz * sizeof(exp_t *));
     if (ht->ev == NULL) {
         fprintf(stderr, "Computation needs too much memory on this machine,\n");
         fprintf(stderr, "could not initialize exponent vector for hash table,\n");
-        fprintf(stderr, "esz = %lu, segmentation fault will follow.\n", (unsigned long)ht->esz);
+        fprintf(stderr, "esz = %zu, segmentation fault will follow.\n", (size_t)ht->esz);
     }
-    exp_t *tmp  = (exp_t *)malloc(
-            (unsigned long)ht->evl * ht->esz * sizeof(exp_t));
+    
+    size_t exp_total_size = (size_t)ht->evl * ht->esz * sizeof(exp_t);
+    exp_t *tmp  = (exp_t *)win_alloc_hash_memory(exp_total_size);
     if (tmp == NULL) {
         fprintf(stderr, "Exponent storage needs too much memory on this machine,\n");
-        fprintf(stderr, "initialization failed, esz = %lu,\n", (unsigned long)ht->esz);
+        fprintf(stderr, "initialization failed, esz = %zu,\n", (size_t)ht->esz);
         fprintf(stderr, "segmentation fault will follow.\n");
     }
     const hl_t esz  = ht->esz;
@@ -255,7 +321,7 @@ void free_hash_table(
 {
     ht_t *ht  = *htp;
     if (ht->hmap) {
-        free(ht->hmap);
+        WIN_HASH_FREE(ht->hmap);
         ht->hmap = NULL;
     }
     if (ht->hd) {
@@ -265,8 +331,8 @@ void free_hash_table(
     if (ht->ev) {
         /* note: memory is allocated as one big block,
             *       so freeing ev[0] is enough */
-        free(ht->ev[0]);
-        free(ht->ev);
+        WIN_HASH_FREE(ht->ev[0]);
+        WIN_HASH_FREE(ht->ev);
         ht->ev  = NULL;
     }
     free(ht);
@@ -280,7 +346,7 @@ void full_free_hash_table(
 {
   ht_t *ht  = *htp;
   if (ht->hmap) {
-    free(ht->hmap);
+    WIN_HASH_FREE(ht->hmap);
     ht->hmap = NULL;
   }
   if (ht->hd) {
@@ -290,8 +356,8 @@ void full_free_hash_table(
   if (ht->ev) {
     /* note: memory is allocated as one big block,
      *       so freeing ev[0] is enough */
-    free(ht->ev[0]);
-    free(ht->ev);
+    WIN_HASH_FREE(ht->ev[0]);
+    WIN_HASH_FREE(ht->ev);
     ht->ev  = NULL;
   }
   if (ht != NULL) {
@@ -329,16 +395,16 @@ static void enlarge_hash_table(
     memset(ht->hd+eld, 0, (esz-eld) * sizeof(hd_t));
     ht->ev    = realloc(ht->ev, esz * sizeof(exp_t *));
     if (ht->ev == NULL) {
-        fprintf(stderr, "Enlarging hash table failed for esz = %lu,\n", (unsigned long)esz);
+        fprintf(stderr, "Enlarging hash table failed for esz = %zu,\n", (size_t)esz);
         fprintf(stderr, "segmentation fault will follow.\n");
     }
     /* note: memory is allocated as one big block, so reallocating
      *       memory from ev[0] is enough    */
     ht->ev[0] = realloc(ht->ev[0],
-            esz * (unsigned long)ht->evl * sizeof(exp_t));
+            esz * (size_t)ht->evl * sizeof(exp_t));
     if (ht->ev[0] == NULL) {
         fprintf(stderr, "Enlarging exponent vector for hash table failed\n");
-        fprintf(stderr, "for esz = %lu, segmentation fault will follow.\n", (unsigned long)esz);
+        fprintf(stderr, "for esz = %zu, segmentation fault will follow.\n", (size_t)esz);
     }
     /* due to realloc we have to reset ALL ev entries,
      * memory might have been moved */
@@ -351,12 +417,19 @@ static void enlarge_hash_table(
      * enlarge to 2^31 elements that's the limit we can go. Thus we cannot
      * enlarge the hash table size any further and have to live with more
      * than 50% fill in. */
-    if (ht->hsz < (hl_t)pow(2,32)) {
+    if (ht->hsz < (1u << 32)) {  // Replace pow(2,32)
         ht->hsz = 2 * ht->hsz;
         const hl_t hsz  = ht->hsz;
+        
+        // Windows-specific check for enlarged hash table
+        if (win_check_hash_size(hsz, sizeof(hi_t), "enlarged") < 0) {
+            fprintf(stderr, "Hash table too large for Windows after enlargement\n");
+            return;
+        }
+        
         ht->hmap  = realloc(ht->hmap, hsz * sizeof(hi_t));
         if (ht->hmap == NULL) {
-            fprintf(stderr, "Enlarging hash table failed for hsz = %lu,\n", (unsigned long)hsz);
+            fprintf(stderr, "Enlarging hash table failed for hsz = %zu,\n", (size_t)hsz);
             fprintf(stderr, "segmentation fault will follow.\n");
         }
         memset(ht->hmap, 0, hsz * sizeof(hi_t));
@@ -378,14 +451,14 @@ static void enlarge_hash_table(
             }
         }
     } else {
-        if (ht->hsz == (hl_t)pow(2,32)) {
+        if (ht->hsz == (1u << 32)) {  // Replace pow(2,32)
           printf("Exponent space is now 2^32 elements wide, we cannot\n");
           printf("enlarge the hash table any further, thus fill in gets\n");
           printf("over 50%% and performance of hashing may get worse.\n");
         } else {
           printf("Hash table is full, we can no longer enlarge\n");
           printf("Segmentation fault will follow.\n");
-          free(ht->hmap);
+          WIN_HASH_FREE(ht->hmap);
           ht->hmap  = NULL;
         }
     }
@@ -429,8 +502,8 @@ void calculate_divmask(
   const len_t * const dv  = ht->dv;
   exp_t **ev  = ht->ev;
 
-  deg_t *max_exp  = (deg_t *)malloc((unsigned long)ht->ndv * sizeof(deg_t));
-  deg_t *min_exp  = (deg_t *)malloc((unsigned long)ht->ndv * sizeof(deg_t));
+  deg_t *max_exp  = (deg_t *)malloc((size_t)ht->ndv * sizeof(deg_t));
+  deg_t *min_exp  = (deg_t *)malloc((size_t)ht->ndv * sizeof(deg_t));
 
   exp_t *e  = ev[1];
 
@@ -623,7 +696,7 @@ restart:
     ht->hmap[k]  = pos = (hi_t)ht->eld;
     e   = ht->ev[pos];
     d   = ht->hd + pos;
-    memcpy(e, a, (unsigned long)evl * sizeof(exp_t));
+    memcpy(e, a, (size_t)evl * sizeof(exp_t));
     d->sdm  =   generate_short_divmask(e, ht);
     d->deg  =   e[0];
     d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
@@ -689,7 +762,7 @@ restart:
     ht->hmap[k]  = pos = (hi_t)ht->eld;
     e   = ht->ev[pos];
     d   = ht->hd + pos;
-    memcpy(e, a, (unsigned long)evl * sizeof(exp_t));
+    memcpy(e, a, (size_t)evl * sizeof(exp_t));
     d->sdm  =   generate_short_divmask(e, ht);
     d->deg  =   e[0];
     d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
@@ -768,7 +841,7 @@ static inline len_t add_to_hash_table(
     ht->hmap[k] = pos = (hi_t)ht->eld;
     exp_t *e    = ht->ev[pos];
     hd_t *d     = ht->hd + pos;
-    memcpy(e, a, (unsigned long)ht->evl * sizeof(exp_t));
+    memcpy(e, a, (size_t)ht->evl * sizeof(exp_t));
     d->sdm  =   generate_short_divmask(e, ht);
     d->deg  =   e[0];
     d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
@@ -865,7 +938,7 @@ restart:
     ht->hmap[k]  = pos = (hi_t)ht->eld;
     e   = ht->ev[pos];
     d   = ht->hd + pos;
-    memcpy(e, a, (unsigned long)evl * sizeof(exp_t));
+    memcpy(e, a, (size_t)evl * sizeof(exp_t));
     d->sdm  =   generate_short_divmask(e, ht);
     d->deg  =   e[0];
     d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
@@ -896,15 +969,15 @@ static inline void reinitialize_hash_table(
         if (ht->ev == NULL) {
             fprintf(stderr, "Computation needs too much memory on this machine,\n");
             fprintf(stderr, "could not reinitialize exponent vector for hash table,\n");
-            fprintf(stderr, "esz = %lu, segmentation fault will follow.\n", (unsigned long)esz);
+            fprintf(stderr, "esz = %zu, segmentation fault will follow.\n", (size_t)esz);
         }
         /* note: memory is allocated as one big block, so reallocating
          *       memory from evl[0] is enough    */
         ht->ev[0]  = realloc(ht->ev[0],
-                esz * (unsigned long)evl * sizeof(exp_t));
+                esz * (size_t)evl * sizeof(exp_t));
         if (ht->ev[0] == NULL) {
             fprintf(stderr, "Exponent storage needs too much memory on this machine,\n");
-            fprintf(stderr, "reinitialization failed, esz = %lu\n", (unsigned long)esz);
+            fprintf(stderr, "reinitialization failed, esz = %zu\n", (size_t)esz);
             fprintf(stderr, "segmentation fault will follow.\n");
         }
         /* due to realloc we have to reset ALL evl entries, memory might be moved */
@@ -992,7 +1065,7 @@ letsgo:
         ps[m] = pp[l];
         const val_t h = uht->hd[lcms[l]].val;
         memcpy(bht->ev[bht->eld], uht->ev[lcms[l]],
-                (unsigned long)evl * sizeof(exp_t));
+                (size_t)evl * sizeof(exp_t));
         const exp_t * const n = bht->ev[bht->eld];
         k = h;
         i = 0;
@@ -1079,10 +1152,10 @@ static inline void insert_in_basis_hash_table_pivots(
     const hd_t * const hds    = sht->hd;
     exp_t * const * const evs = sht->ev;
     
-    exp_t *evt  = (exp_t *)malloc((unsigned long)evl * sizeof(exp_t));
+    exp_t *evt  = (exp_t *)malloc((size_t)evl * sizeof(exp_t));
     for (l = OFFSET; l < len; ++l) {
         memcpy(evt, evs[hcm[row[l]]],
-                (unsigned long)evl * sizeof(exp_t));
+                (size_t)evl * sizeof(exp_t));
         row[l] = insert_in_hash_table(evt, bht);
     }
     free(evt);
@@ -1208,7 +1281,7 @@ restart:
         ht->hmap[k] = pos = (hi_t)ht->eld;
         e = ht->ev[ht->eld];
         d = ht->hd + ht->eld;
-        memcpy(e, n, (unsigned long)evl * sizeof(exp_t));
+        memcpy(e, n, (size_t)evl * sizeof(exp_t));
         d->sdm  =   generate_short_divmask(e, ht);
         d->deg  =   e[0];
         d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
@@ -1257,14 +1330,14 @@ static void reset_hash_table(
     ht->ev  = calloc(esz, sizeof(exp_t *));
     if (ht->ev == NULL) {
         fprintf(stderr, "Computation needs too much memory on this machine,\n");
-        fprintf(stderr, "cannot reset ht->ev, esz = %lu\n", (unsigned long)esz);
+        fprintf(stderr, "cannot reset ht->ev, esz = %zu\n", (size_t)esz);
         fprintf(stderr, "segmentation fault will follow.\n");
     }
     exp_t *tmp  = (exp_t *)malloc(
-            (unsigned long)evl * esz * sizeof(exp_t));
+            (size_t)evl * esz * sizeof(exp_t));
     if (tmp == NULL) {
         fprintf(stderr, "Computation needs too much memory on this machine,\n");
-        fprintf(stderr, "resetting table failed, esz = %lu\n", (unsigned long)esz);
+        fprintf(stderr, "resetting table failed, esz = %zu\n", (size_t)esz);
         fprintf(stderr, "segmentation fault will follow.\n");
     }
     for (k = 0; k < esz; ++k) {
@@ -1350,7 +1423,7 @@ static inline hm_t *poly_to_matrix_row(
     const hm_t *poly
     )
 {
-  hm_t *row = (hm_t *)malloc((unsigned long)(poly[LENGTH]+OFFSET) * sizeof(hm_t));
+  hm_t *row = (hm_t *)malloc((size_t)(poly[LENGTH]+OFFSET) * sizeof(hm_t));
   row[COEFFS]   = poly[COEFFS];
   row[PRELOOP]  = poly[PRELOOP];
   row[LENGTH]   = poly[LENGTH];
@@ -1372,7 +1445,7 @@ static inline hm_t *multiplied_poly_to_matrix_row(
     const hm_t *poly
     )
 {
-  hm_t *row = (hm_t *)malloc((uint64_t)(poly[LENGTH]+OFFSET) * sizeof(hm_t));
+  hm_t *row = (hm_t *)malloc((size_t)(poly[LENGTH]+OFFSET) * sizeof(hm_t));
   row[COEFFS]   = poly[COEFFS];
   row[PRELOOP]  = poly[PRELOOP];
   row[LENGTH]   = poly[LENGTH];
