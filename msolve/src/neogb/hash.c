@@ -417,7 +417,7 @@ static void enlarge_hash_table(
      * enlarge to 2^31 elements that's the limit we can go. Thus we cannot
      * enlarge the hash table size any further and have to live with more
      * than 50% fill in. */
-    if (ht->hsz < (1u << 32)) {  // Replace pow(2,32)
+    if (ht->hsz < (1ULL << 32)) {  // Replace pow(2,32) - use 64-bit constant
         ht->hsz = 2 * ht->hsz;
         const hl_t hsz  = ht->hsz;
         
@@ -451,7 +451,7 @@ static void enlarge_hash_table(
             }
         }
     } else {
-        if (ht->hsz == (1u << 32)) {  // Replace pow(2,32)
+        if (ht->hsz == (1ULL << 32)) {  // Replace pow(2,32) - use 64-bit constant
           printf("Exponent space is now 2^32 elements wide, we cannot\n");
           printf("enlarge the hash table any further, thus fill in gets\n");
           printf("over 50%% and performance of hashing may get worse.\n");
