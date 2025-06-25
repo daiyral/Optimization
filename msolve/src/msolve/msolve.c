@@ -2273,8 +2273,9 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
   double strat = 0;
 
   /* Prevent infinite loops by limiting iterations */
-  int max_iterations = 1000;
+  int max_iterations = 100000;
   int iteration_count = 0;
+  int hit_iteration_limit = 0;
 
   while ((rerun == 1 || mcheck == 1) && iteration_count < max_iterations) {
     iteration_count++;
@@ -2486,26 +2487,11 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
 
   /* Check if we exceeded the iteration limit */
   if (iteration_count >= max_iterations) {
+    hit_iteration_limit = 1;
     if (info_level) {
-      fprintf(stderr, "WARNING: Iteration limit (%d) reached. Computation may not have converged.\n", max_iterations);
-      fprintf(stderr, "Consider increasing precision or adjusting parameters.\n");
+      fprintf(stderr, "WARNING: Iteration limit (%d) reached. Computation may not have fully converged.\n", max_iterations);
+      fprintf(stderr, "Displaying partial results below. Consider increasing precision or adjusting parameters.\n");
     }
-    /* Clean up and return early */
-    mpz_param_clear(tmp_mpz_param);
-    mpz_upoly_clear(numer);
-    mpz_upoly_clear(denom);
-    mpz_clear(guessed_num);
-    mpz_clear(guessed_den);
-    mpq_clear(test);
-    mpq_clear(result);
-    mpz_clear(rnum);
-    mpz_clear(rden);
-    mpz_clear(modulus);
-    mpz_clear(prod_crt);
-    free_rrec_data(recdata);
-    trace_det_clear(trace_det);
-    free(is_lifted);
-    return -1; /* Return error code */
   }
 
   (*mpz_paramp)->denom->length = (*mpz_paramp)->nsols;
@@ -2528,6 +2514,10 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
     fprintf(stdout,"\n---------- COMPUTATIONAL DATA -----------\n");
     fprintf(stdout, "#primes            %16lu\n", (unsigned long) nprimes);
     fprintf(stdout, "#bad primes        %16lu\n", (unsigned long) nbadprimes);
+    fprintf(stdout, "#iterations        %16d\n", iteration_count);
+    if (hit_iteration_limit) {
+      fprintf(stdout, "WARNING: Hit iteration limit - results may be incomplete!\n");
+    }
     fprintf(stdout, "-----------------------------------------\n");
     fprintf(stdout, "\n---------------- TIMINGS ----------------\n");
     fprintf(stdout, "CRT and ratrecon(elapsed) %10.2f sec\n", st->fglm_rtime);
