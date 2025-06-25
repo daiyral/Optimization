@@ -51,11 +51,6 @@ static inline void win_free_large_matrix(void *ptr) {
     }
 }
 
-// Windows-compatible matrix free function
-#define WIN_MATRIX_FREE(ptr) win_free_large_matrix(ptr)
-#else
-#define WIN_MATRIX_FREE(ptr) posix_memalign_free(ptr)
-
 // Check if matrix allocation would be too large for Windows
 static inline int win_check_matrix_size(long dquot, long len_xn, const char* context) {
     size_t matrix_size = (size_t)dquot * len_xn * sizeof(CF_t);
@@ -73,6 +68,15 @@ static inline int win_check_matrix_size(long dquot, long len_xn, const char* con
     }
     
     return 1;  // OK to proceed
+}
+
+// Windows-compatible matrix free function
+#define WIN_MATRIX_FREE(ptr) win_free_large_matrix(ptr)
+#else
+#define WIN_MATRIX_FREE(ptr) posix_memalign_free(ptr)
+// Dummy function for non-Windows builds
+static inline int win_check_matrix_size(long dquot, long len_xn, const char* context) {
+    return 1;  // Always OK on non-Windows
 }
 #endif
 
