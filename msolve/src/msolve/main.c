@@ -108,7 +108,7 @@ static inline void display_help(char *str){
   fprintf(stdout, "         42 - sparse / dense linearization (probabilistic)\n");
   fprintf(stdout, "         44 - sparse linearization (probabilistic)\n");
   fprintf(stdout, "-m MPR   Maximal number of pairs used per matrix.\n");
-  fprintf(stdout, "         Default: 500000 (limited for memory efficiency).\n");
+  fprintf(stdout, "         Default: 0 (no limit).\n");
   fprintf(stdout, "-n NF    Given n input generators compute normal form of the last NF\n");
   fprintf(stdout, "         elements of the input w.r.t. a degree reverse lexicographical\n");
   fprintf(stdout, "         Gröbner basis of the first (n - NF) input elements.\n");
@@ -353,8 +353,8 @@ int main(int argc, char **argv){
     int32_t use_signatures        = 0;
     int32_t nr_threads            = 1;
     int32_t info_level            = 0;
-    int32_t initial_hts           = 10;
-    int32_t max_pairs             = 500000;  /* Limit for 16GB systems */
+    int32_t initial_hts           = 17;
+    int32_t max_pairs             = 0;
     int32_t elim_block_len        = 0;
     int32_t update_ht             = 0;
     int32_t generate_pbm          = 0;
@@ -370,7 +370,7 @@ int main(int argc, char **argv){
     int32_t is_gb                 = 0;
     int32_t lift_matrix           = 0;
     int32_t get_param             = 0;
-    int32_t precision             = 64;  /* Reduced for 16GB systems */
+    int32_t precision             = 128;
     int32_t refine                = 0; /* not used at the moment */
     int32_t isolate               = 0; /* not used at the moment */
 
