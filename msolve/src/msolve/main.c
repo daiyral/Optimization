@@ -353,7 +353,7 @@ int main(int argc, char **argv){
     int32_t use_signatures        = 0;
     int32_t nr_threads            = 1;
     int32_t info_level            = 0;
-    int32_t initial_hts           = 17;
+    int32_t initial_hts           = 10;
     int32_t max_pairs             = 0;
     int32_t elim_block_len        = 0;
     int32_t update_ht             = 0;

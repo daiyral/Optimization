@@ -2272,7 +2272,12 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
   /* measures time spent in rational reconstruction */
   double strat = 0;
 
-  while (rerun == 1 || mcheck == 1) {
+  /* Prevent infinite loops by limiting iterations */
+  int max_iterations = 1000;
+  int iteration_count = 0;
+
+  while ((rerun == 1 || mcheck == 1) && iteration_count < max_iterations) {
+    iteration_count++;
     /* controls call to rational reconstruction */
     doit = ((prdone % nbdoit) == 0);
 
@@ -2477,6 +2482,30 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
       clog++;
       lpow2 = 2 * lpow2;
     }
+  }
+
+  /* Check if we exceeded the iteration limit */
+  if (iteration_count >= max_iterations) {
+    if (info_level) {
+      fprintf(stderr, "WARNING: Iteration limit (%d) reached. Computation may not have converged.\n", max_iterations);
+      fprintf(stderr, "Consider increasing precision or adjusting parameters.\n");
+    }
+    /* Clean up and return early */
+    mpz_param_clear(tmp_mpz_param);
+    mpz_upoly_clear(numer);
+    mpz_upoly_clear(denom);
+    mpz_clear(guessed_num);
+    mpz_clear(guessed_den);
+    mpq_clear(test);
+    mpq_clear(result);
+    mpz_clear(rnum);
+    mpz_clear(rden);
+    mpz_clear(modulus);
+    mpz_clear(prod_crt);
+    free_rrec_data(recdata);
+    trace_det_clear(trace_det);
+    free(is_lifted);
+    return -1; /* Return error code */
   }
 
   (*mpz_paramp)->denom->length = (*mpz_paramp)->nsols;

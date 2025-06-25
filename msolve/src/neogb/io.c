@@ -836,7 +836,7 @@ int32_t check_and_set_meta_data(
     /* set hash table size */
     st->init_hts  = ht_size;
     if (st->init_hts <= 0) {
-        st->init_hts  = 12;
+        st->init_hts  = 10;
     }
     /* info level */
     st->info_level  = info_level >= 0 ? info_level : 0;
