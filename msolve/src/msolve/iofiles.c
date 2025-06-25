@@ -544,7 +544,8 @@ static void get_characteristic(FILE *fh, char * line, int max_line_size,
       *field_char = (int32_t) tmp_mod;
       /* change 0 to large prime */
       if(tmp_mod == 0){
-        *field_char = 1073741827; /* prime that fits in 32-bit */      
+        
+        *field_char = 536870909;
         }
       if(tmp_mod > 2147483647){
         fprintf(stderr, "Warning: characteristic must be 0 or < 2^31\n");

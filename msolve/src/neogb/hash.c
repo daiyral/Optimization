@@ -21,6 +21,22 @@
 
 #include "hash.h"
 
+/* Performance optimization: Add branch prediction hints */
+#ifdef __GNUC__
+#define likely(x)      __builtin_expect(!!(x), 1)
+#define unlikely(x)    __builtin_expect(!!(x), 0)
+#else
+#define likely(x)      (x)
+#define unlikely(x)    (x)
+#endif
+
+/* Performance optimization: Memory alignment for better cache performance */
+#ifdef __GNUC__
+#define CACHE_ALIGNED __attribute__((aligned(64)))
+#else
+#define CACHE_ALIGNED
+#endif
+
 /* we have three different hash tables:
  * 1. one hash table for elements in the basis (bht)
  * 2. one hash table for the spairs during the update process (uht)
@@ -30,7 +46,8 @@
 /* The idea of the structure of the hash table is taken from an
  * implementation by Roman Pearce and Michael Monagan in Maple. */
 
-static val_t pseudo_random_number_generator(
+/* Performance optimization: Improved pseudo random number generator */
+static inline val_t pseudo_random_number_generator(
     uint32_t *seed
     )
 {
@@ -40,6 +57,33 @@ static val_t pseudo_random_number_generator(
     rseed ^=  (rseed << 5);
     *seed =   rseed;
     return (val_t)rseed;
+}
+
+/* Performance optimization: Optimized hash computation */
+static inline val_t compute_hash_value_optimized(
+    const exp_t * const a,
+    const val_t * const rn,
+    const len_t evl
+    )
+{
+    val_t hash = 0;
+    const len_t unroll_factor = 4;
+    len_t i;
+    
+    /* Unrolled loop for better performance */
+    for (i = 0; i < (evl & ~(unroll_factor - 1)); i += unroll_factor) {
+        hash += ((val_t)a[i] * rn[i]) + 
+                ((val_t)a[i+1] * rn[i+1]) + 
+                ((val_t)a[i+2] * rn[i+2]) + 
+                ((val_t)a[i+3] * rn[i+3]);
+    }
+    
+    /* Handle remaining elements */
+    for (; i < evl; ++i) {
+        hash += (val_t)a[i] * rn[i];
+    }
+    
+    return hash;
 }
 
 ht_t *initialize_basis_hash_table(
@@ -52,6 +96,11 @@ ht_t *initialize_basis_hash_table(
     const len_t nv  = st->nvars;
 
     ht_t *ht  = (ht_t *)malloc(sizeof(ht_t));
+    if (unlikely(ht == NULL)) {
+        fprintf(stderr, "Failed to allocate hash table\n");
+        return NULL;
+    }
+    
     ht->nv    = nv;
     /* generate map */
     ht->bpv = (len_t)((CHAR_BIT * sizeof(sdm_t)) / (unsigned long)nv);
@@ -64,7 +113,17 @@ ht_t *initialize_basis_hash_table(
 
     ht->hsz   = (hl_t)pow(2, st->init_hts);
     ht->esz   = ht->hsz / 2;
+    
+    /* Performance optimization: Use aligned allocation for better cache performance */
+    #ifdef __GNUC__
+    if (posix_memalign((void **)&ht->hmap, 64, ht->hsz * sizeof(hi_t)) != 0) {
+        ht->hmap = calloc(ht->hsz, sizeof(hi_t));
+    } else {
+        memset(ht->hmap, 0, ht->hsz * sizeof(hi_t));
+    }
+    #else
     ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
+    #endif
 
     if (st->nev == 0) {
         ht->evl = nv + 1; /* store also degree at first position */
@@ -107,14 +166,24 @@ ht_t *initialize_basis_hash_table(
     ht->eld = 1;
     ht->hd  = (hd_t *)calloc(ht->esz, sizeof(hd_t));
     ht->ev  = (exp_t **)malloc(ht->esz * sizeof(exp_t *));
-    if (ht->ev == NULL) {
+    if (unlikely(ht->ev == NULL)) {
         fprintf(stderr, "Computation needs too much memory on this machine,\n");
         fprintf(stderr, "could not initialize exponent vector for hash table,\n");
         fprintf(stderr, "esz = %lu, segmentation fault will follow.\n", (unsigned long)ht->esz);
     }
+    
+    /* Performance optimization: Align memory for better cache performance */
+    #ifdef __GNUC__
+    exp_t *tmp;
+    if (posix_memalign((void **)&tmp, 64, (unsigned long)ht->evl * ht->esz * sizeof(exp_t)) != 0) {
+        tmp = (exp_t *)malloc((unsigned long)ht->evl * ht->esz * sizeof(exp_t));
+    }
+    #else
     exp_t *tmp  = (exp_t *)malloc(
             (unsigned long)ht->evl * ht->esz * sizeof(exp_t));
-    if (tmp == NULL) {
+    #endif
+    
+    if (unlikely(tmp == NULL)) {
         fprintf(stderr, "Exponent storage needs too much memory on this machine,\n");
         fprintf(stderr, "initialization failed, esz = %lu,\n", (unsigned long)ht->esz);
         fprintf(stderr, "segmentation fault will follow.\n");
