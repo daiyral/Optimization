@@ -84,21 +84,10 @@ getdelim (char **lineptr, size_t *n, int delimiter, FILE *fp)
       /* Make enough space for len+1 (for final NUL) bytes.  */
       if (cur_len + 1 >= *n)
         {
-          /* Limit maximum buffer size to 64MB to prevent excessive memory usage */
-          size_t max_reasonable_size = 64 * 1024 * 1024; /* 64MB */
           size_t needed_max =
             SSIZE_MAX < SIZE_MAX ? (size_t) SSIZE_MAX + 1 : SIZE_MAX;
-          if (needed_max > max_reasonable_size)
-            needed_max = max_reasonable_size;
           size_t needed = 2 * *n + 1;   /* Be generous. */
           char *new_lineptr;
-
-          /* Use more conservative growth when buffer is already large */
-          if (*n > 1024 * 1024) /* If buffer is already > 1MB */
-            {
-              /* Grow by 25% instead of doubling to limit memory usage */
-              needed = *n + (*n / 4) + 1;
-            }
 
           if (needed_max < needed)
             needed = needed_max;
